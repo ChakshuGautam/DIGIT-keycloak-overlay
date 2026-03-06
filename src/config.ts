@@ -21,4 +21,11 @@ export const config = {
 
   // Upstream routing
   upstreamServices: process.env.UPSTREAM_SERVICES || "",
+
+  // Keycloak Admin API (for user registration)
+  keycloakAdminUrl: process.env.KEYCLOAK_ADMIN_URL || "http://localhost:8180",
+  keycloakAdminRealm: process.env.KEYCLOAK_ADMIN_REALM || "digit-sandbox",
+  keycloakAdminClientId: process.env.KEYCLOAK_ADMIN_CLIENT_ID || "admin-cli",
+  keycloakAdminUsername: process.env.KEYCLOAK_ADMIN_USERNAME || "admin",
+  keycloakAdminPassword: process.env.KEYCLOAK_ADMIN_PASSWORD || "admin",
 };

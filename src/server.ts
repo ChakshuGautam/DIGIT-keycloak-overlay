@@ -10,6 +10,7 @@ import {
 import { resolveUser } from "./user-resolver.js";
 import { initRoutes } from "./routes.js";
 import { proxyRequest } from "./proxy.js";
+import { searchKeycloakUser, createKeycloakUser } from "./keycloak-admin.js";
 
 export async function createApp() {
   const app = express();
@@ -25,6 +26,48 @@ export async function createApp() {
       res.json({ status: "ok", redis: "connected" });
     } catch {
       res.status(503).json({ status: "unhealthy", redis: "disconnected" });
+    }
+  });
+
+  // CORS for browser requests
+  app.use((_req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    if (_req.method === "OPTIONS") return res.sendStatus(204);
+    next();
+  });
+
+  // Register endpoint: create user in Keycloak
+  app.post("/register", async (req, res) => {
+    const { email, password, name } = req.body;
+    if (!email || !password || !name) {
+      return res.status(400).json({ error: "email, password, and name are required" });
+    }
+    try {
+      await createKeycloakUser({ email, password, name });
+      res.status(201).json({ success: true, email });
+    } catch (err: any) {
+      if (err.message === "User already exists") {
+        return res.status(409).json({ error: "User already exists" });
+      }
+      console.error("Register error:", err);
+      res.status(500).json({ error: "Registration failed", message: String(err) });
+    }
+  });
+
+  // Check if email exists in Keycloak
+  app.get("/check-email", async (req, res) => {
+    const email = req.query.email as string;
+    if (!email) {
+      return res.status(400).json({ error: "email query param required" });
+    }
+    try {
+      const exists = await searchKeycloakUser(email);
+      res.json({ exists });
+    } catch (err) {
+      console.error("Check email error:", err);
+      res.status(500).json({ error: "Check failed", exists: false });
     }
   });
 
