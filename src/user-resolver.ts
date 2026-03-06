@@ -2,6 +2,7 @@ import type { KCClaims, DigitUser, CachedSession } from "./types.js";
 import { getCached, setCached } from "./cache.js";
 import { searchUser, createUser, updateUser, updateUserRoles } from "./digit-client.js";
 import { config } from "./config.js";
+import { syncUserToKc } from "./kc-sync.js";
 
 // Known DIGIT role codes (from access_roles_search)
 const DIGIT_ROLES = new Set([
@@ -60,6 +61,13 @@ export async function resolveUser(
       }
     }
 
+    // Fire-and-forget KC sync for cached user
+    if (config.tenantSyncEnabled) {
+      syncUserToKc(claims.sub, cached.user, effectiveTenant).catch(err =>
+        console.warn("KC sync failed (non-fatal):", (err as Error).message)
+      );
+    }
+
     return cached.user;
   }
 
@@ -82,6 +90,13 @@ export async function resolveUser(
   // 4. Cache
   const session: CachedSession = { user: digitUser, cachedAt: Date.now() };
   await setCached(claims.sub, effectiveTenant, session);
+
+  // Fire-and-forget KC sync for newly resolved user
+  if (config.tenantSyncEnabled) {
+    syncUserToKc(claims.sub, digitUser, effectiveTenant).catch(err =>
+      console.warn("KC sync failed (non-fatal):", (err as Error).message)
+    );
+  }
 
   return digitUser;
 }
