@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.js.map
 .env
+.test-private-key.pem
+.test-public-key.json
