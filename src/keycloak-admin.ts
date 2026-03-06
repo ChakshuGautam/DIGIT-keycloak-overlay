@@ -35,7 +35,7 @@ export async function getAdminToken(): Promise<string> {
 export async function searchKeycloakUser(email: string): Promise<boolean> {
   const token = await getAdminToken();
   const resp = await fetch(
-    `${config.keycloakAdminUrl}/admin/realms/${config.keycloakAdminRealm}/users?email=${encodeURIComponent(email)}&exact=true`,
+    `${config.keycloakAdminUrl}/admin/realms/${config.keycloakUserRealm}/users?email=${encodeURIComponent(email)}&exact=true`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   if (!resp.ok) return false;
@@ -50,7 +50,7 @@ export async function createKeycloakUser(params: {
 }): Promise<void> {
   const token = await getAdminToken();
   const resp = await fetch(
-    `${config.keycloakAdminUrl}/admin/realms/${config.keycloakAdminRealm}/users`,
+    `${config.keycloakAdminUrl}/admin/realms/${config.keycloakUserRealm}/users`,
     {
       method: "POST",
       headers: {
