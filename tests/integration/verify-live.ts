@@ -36,6 +36,11 @@ const MDMS_HOST = "http://localhost:18094";
 const LOCALIZATION_HOST = "http://localhost:18096";
 const REDIS_PORT = 16379;
 const TEST_TENANT = "pg.citya";
+const DB_URL = process.env.DIGIT_DB_URL || "postgresql://egov:egov123@localhost:15432/egov";
+const TEST_EMAIL_DOMAINS = [
+  "@keycloak-test.example.com",
+  "@keycloak-proxy-test.example.com",
+];
 
 // ── Test Infrastructure ─────────────────────────────────────────────
 
@@ -429,6 +434,53 @@ async function verifyRouteCoverage() {
   });
 }
 
+// ── Teardown: clean up test users and cache ──────────────────────────
+
+async function teardown() {
+  console.log("\n═══ Teardown: Cleaning Test Artifacts ═══\n");
+
+  // 1. Clean Redis cache keys matching keycloak:* test patterns
+  await test("Clean Redis cache keys", async () => {
+    try {
+      const { Redis } = await import("ioredis");
+      const redis = new Redis({ host: "localhost", port: REDIS_PORT });
+      const keys = await redis.keys("keycloak:*");
+      if (keys.length > 0) {
+        await redis.del(...keys);
+        console.log(`    → Deleted ${keys.length} Redis cache key(s)`);
+      } else {
+        console.log("    → No keycloak:* cache keys found");
+      }
+      await redis.quit();
+    } catch (err: any) {
+      console.log(`    ⚠ Redis cleanup skipped: ${err.message}`);
+    }
+  });
+
+  // 2. Clean test users from DB
+  await test("Clean test users from DB", async () => {
+    try {
+      const { default: pg } = await import("pg");
+      const client = new pg.Client({ connectionString: DB_URL });
+      await client.connect();
+
+      const conditions = TEST_EMAIL_DOMAINS.map(
+        (d) => `username LIKE '%${d}'`
+      ).join(" OR ");
+
+      const result = await client.query(
+        `DELETE FROM eg_user WHERE ${conditions}`
+      );
+      console.log(`    → Deleted ${result.rowCount} test user(s) from eg_user`);
+
+      await client.end();
+    } catch (err: any) {
+      // pg module may not be installed — that's OK, skip gracefully
+      console.log(`    ⚠ DB cleanup skipped: ${err.message}`);
+    }
+  });
+}
+
 // ── Main ────────────────────────────────────────────────────────────
 
 async function main() {
@@ -444,7 +496,10 @@ async function main() {
     await verifyProxyFlow();
     await verifyRouteCoverage();
   } finally {
-    // Cleanup
+    // Always run teardown, even on test failure
+    await teardown().catch((err) => console.error("Teardown error:", err));
+
+    // Close servers and connections
     jwksServer?.close();
     appServer?.close();
     await closeCache().catch(() => {});
