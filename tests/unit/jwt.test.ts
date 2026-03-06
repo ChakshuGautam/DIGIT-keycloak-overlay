@@ -45,4 +45,19 @@ describe("validateJwt", () => {
   it("returns null for garbage token", async () => {
     expect(await validateJwt("Bearer not.a.real.jwt")).toBeNull();
   });
+
+  it("validates JWT from a non-default realm issuer", async () => {
+    const token = await signJwt({ sub: "user-1", email: "a@b.com" });
+    const claims = await validateJwt(`Bearer ${token}`);
+    expect(claims).not.toBeNull();
+  });
+
+  it("extracts realm name from issuer", async () => {
+    const token = await signJwt({ sub: "u1", email: "a@b.com" });
+    const claims = await validateJwt(`Bearer ${token}`);
+    expect(claims).not.toBeNull();
+    // The issuer in test is "http://localhost:9999/realms/digit-sandbox"
+    // so realm should be "digit-sandbox"
+    expect(claims!.realm).toBe("digit-sandbox");
+  });
 });

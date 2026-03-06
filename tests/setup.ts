@@ -2,6 +2,7 @@ import type { GlobalSetupContext } from "vitest/node";
 import { initKeys, createJwksApp, cleanupKeys } from "../mocks/jwks-server.js";
 import { createEgovUserMock } from "../mocks/egov-user.js";
 import { createDigitBackendMock } from "../mocks/digit-backend.js";
+import { createKcAdminMock } from "../mocks/kc-admin.js";
 import type { AddressInfo } from "node:net";
 
 let servers: any[] = [];
@@ -32,6 +33,12 @@ export async function setup(_ctx: GlobalSetupContext) {
   servers.push(backendSrv2);
   const wfPort = (backendSrv2.address() as AddressInfo).port;
 
+  // 4. Mock KC Admin on random port
+  const { app: kcAdminApp } = createKcAdminMock();
+  const kcAdminSrv = kcAdminApp.listen(0);
+  servers.push(kcAdminSrv);
+  const kcAdminPort = (kcAdminSrv.address() as AddressInfo).port;
+
   // Set env vars for workers
   process.env.KEYCLOAK_JWKS_URI =
     "http://localhost:9999/realms/digit-sandbox/protocol/openid-connect/certs";
@@ -41,6 +48,9 @@ export async function setup(_ctx: GlobalSetupContext) {
   process.env.REDIS_PORT = "16379";
   process.env.MOCK_PGR_PORT = String(pgrPort);
   process.env.MOCK_WF_PORT = String(wfPort);
+  process.env.KEYCLOAK_ADMIN_URL = `http://localhost:${kcAdminPort}`;
+  process.env.TENANT_SYNC_ENABLED = "true";
+  process.env.DIGIT_TENANTS = "pg:pg.citya,pg.cityb";
 }
 
 export async function teardown() {

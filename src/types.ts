@@ -8,6 +8,8 @@ export interface KCClaims {
   realm_access?: {
     roles: string[];
   };
+  groups?: string[];
+  realm?: string;  // extracted from iss claim
 }
 
 export interface DigitUser {

@@ -1,0 +1,109 @@
+{
+  "realm": "__REALM_NAME__",
+  "enabled": true,
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "maxFailureWaitSeconds": 900,
+  "failureFactor": 5,
+  "passwordPolicy": "length(8)",
+  "sslRequired": "none",
+  "accessTokenLifespan": 900,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 604800,
+  "roles": {
+    "realm": [
+      { "name": "CITIZEN", "description": "Default citizen role" },
+      { "name": "EMPLOYEE", "description": "Base employee role" },
+      { "name": "SUPERUSER", "description": "Full system access" },
+      { "name": "GRO", "description": "Grievance Routing Officer" },
+      { "name": "PGR_LME", "description": "PGR Last Mile Employee" },
+      { "name": "DGRO", "description": "Department GRO" },
+      { "name": "CSR", "description": "Customer Service Rep" },
+      { "name": "SUPERVISOR", "description": "Supervisor" },
+      { "name": "AUTO_ESCALATE", "description": "Auto escalation" },
+      { "name": "PGR_VIEWER", "description": "PGR read-only access" },
+      { "name": "TICKET_REPORT_VIEWER", "description": "Report viewer" },
+      { "name": "LOC_ADMIN", "description": "Localization admin" },
+      { "name": "MDMS_ADMIN", "description": "Master data admin" },
+      { "name": "HRMS_ADMIN", "description": "HR admin" },
+      { "name": "WORKFLOW_ADMIN", "description": "Workflow admin" },
+      { "name": "COMMON_EMPLOYEE", "description": "Common employee" },
+      { "name": "REINDEXING_ROLE", "description": "Elasticsearch reindexing" },
+      { "name": "QA_AUTOMATION", "description": "Automated testing" },
+      { "name": "SYSTEM", "description": "Internal system role" },
+      { "name": "ANONYMOUS", "description": "Unauthenticated access" },
+      { "name": "INTERNAL_MICROSERVICE_ROLE", "description": "Inter-service communication" }
+    ]
+  },
+  "defaultRoles": ["CITIZEN"],
+  "clients": [
+    {
+      "clientId": "digit-ui",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "protocol": "openid-connect",
+      "rootUrl": "",
+      "baseUrl": "/",
+      "redirectUris": [
+        "http://localhost:*",
+        "https://*.egov.theflywheel.in/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "https://*.egov.theflywheel.in"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "defaultClientScopes": [
+        "web-origins",
+        "profile",
+        "roles",
+        "email",
+        "groups"
+      ]
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "groups",
+      "protocol": "openid-connect",
+      "attributes": {
+        "display.on.consent.screen": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "groups",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "defaultDefaultClientScopes": [
+    "web-origins",
+    "profile",
+    "roles",
+    "email",
+    "groups"
+  ],
+  "scopeMappings": [],
+  "identityProviders": [],
+  "smtpServer": {}
+}

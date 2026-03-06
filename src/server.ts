@@ -11,14 +11,12 @@ import { resolveUser } from "./user-resolver.js";
 import { initRoutes } from "./routes.js";
 import { proxyRequest } from "./proxy.js";
 import { searchKeycloakUser, createKeycloakUser } from "./keycloak-admin.js";
+import { initKcAdmin, stopKcAdminRefresh, syncTenantRealms } from "./kc-admin.js";
 
 export async function createApp() {
   const app = express();
-
-  // Parse JSON bodies (needed for RequestInfo injection)
   app.use(express.json({ limit: "10mb" }));
 
-  // Health check
   app.get("/healthz", async (_req, res) => {
     try {
       const redis = getRedis();
@@ -73,7 +71,6 @@ export async function createApp() {
 
   // Main proxy handler
   app.all("*", async (req, res) => {
-    // 1. Validate JWT
     const claims = await validateJwt(req.headers.authorization);
     if (!claims) {
       return res
@@ -81,16 +78,13 @@ export async function createApp() {
         .json({ error: "Unauthorized", message: "Invalid or missing Keycloak JWT" });
     }
 
-    // 2. Extract tenantId from request body
     const tenantId =
       req.body?.RequestInfo?.userInfo?.tenantId ||
       req.body?.tenantId ||
       config.digitDefaultTenant;
 
-    // 3. Resolve Keycloak user -> DIGIT user
     try {
       const digitUser = await resolveUser(claims, tenantId);
-      // 4. Proxy to upstream with injected auth
       await proxyRequest(req, res, digitUser);
     } catch (err) {
       console.error("User resolution error:", err);
@@ -103,7 +97,6 @@ export async function createApp() {
   return app;
 }
 
-// Start server when run directly
 const isMain =
   process.argv[1]?.endsWith("server.ts") ||
   process.argv[1]?.endsWith("server.js");
@@ -115,6 +108,15 @@ if (isMain) {
     await initSystemToken();
     startTokenRefresh();
 
+    if (config.tenantSyncEnabled) {
+      try {
+        await initKcAdmin();
+        await syncTenantRealms();
+      } catch (err) {
+        console.warn("KC Admin init failed (non-fatal):", (err as Error).message);
+      }
+    }
+
     const app = await createApp();
     app.listen(config.port, () => {
       console.log(`token-exchange-svc listening on :${config.port}`);
@@ -122,6 +124,7 @@ if (isMain) {
 
     process.on("SIGTERM", async () => {
       stopTokenRefresh();
+      stopKcAdminRefresh();
       await closeCache();
       process.exit(0);
     });
