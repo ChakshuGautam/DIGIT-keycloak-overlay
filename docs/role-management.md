@@ -8,30 +8,34 @@ Bidirectional role sync between Keycloak and DIGIT.
                        Bidirectional Role Sync
                        =======================
 
-  ┌──────────────────┐                              ┌──────────────────┐
-  │    Keycloak       │                              │      DIGIT       │
-  │                  │       token-exchange-svc       │                  │
-  │ Realm Roles:     │      ┌──────────────────┐     │ egov-user        │
-  │  - SUPERUSER     │ JWT  │                  │     │  user.roles      │
-  │  - EMPLOYEE      │ ───> │ KC→DIGIT sync    │ ──> │                  │
-  │  - GRO           │      │ (on every login) │     │                  │
-  │  - PGR_LME       │      │                  │     │                  │
-  │  - ...           │ <─── │ DIGIT→KC sync    │ <── │ egov-hrms        │
-  │                  │      │ (on role-change  │     │  role assignments │
-  │ Composite Roles: │      │  API calls)      │     │                  │
-  │  digit-admin     │      └──────────────────┘     │                  │
-  └──────────────────┘                              └──────────────────┘
+  ┌──────────────────────────────┐                   ┌──────────────────┐
+  │    Keycloak                   │                   │      DIGIT       │
+  │                              │  token-exchange-svc│                  │
+  │ Realm "pg":                  │  ┌──────────────┐  │ egov-user        │
+  │  ├─ Roles: GRO, PGR_LME, …  │  │              │  │  user.roles      │
+  │  ├─ Groups: pg.citya, pg.cityb│ │ KC→DIGIT     │  │                  │
+  │  └─ Users: alice, bob       │──>│ (every login)│─>│                  │
+  │                              │  │              │  │                  │
+  │ Realm "mz":                  │<─│ DIGIT→KC     │<─│ egov-hrms        │
+  │  ├─ Roles: GRO, PGR_LME, …  │  │ (role change)│  │  role assignments │
+  │  ├─ Groups: mz.maputo       │  │              │  │                  │
+  │  └─ Users: carlos           │  └──────────────┘  │                  │
+  │                              │                   │                  │
+  │ Realm "master":              │                   │                  │
+  │  └─ Admin only              │                   │                  │
+  └──────────────────────────────┘                   └──────────────────┘
 
   Source of truth: DIGIT (roles are defined in DIGIT MDMS/access-control)
   Keycloak mirror: kept in sync so JWTs carry current roles
+  One realm per DIGIT state root — city tenants map to groups within the realm
 ```
 
 ### Sync Directions
 
 | Direction | Trigger | Mechanism |
 |-----------|---------|-----------|
-| **KC → DIGIT** | Every API request | token-exchange-svc reads `realm_access.roles` from JWT, syncs to DIGIT user |
-| **DIGIT → KC** | Role-change API calls (`/egov-hrms`, `/user`) | token-exchange-svc intercepts response, mirrors role changes to KC Admin API |
+| **KC → DIGIT** | Every API request | token-exchange-svc reads `realm_access.roles` from JWT (realm = state root), syncs to DIGIT user |
+| **DIGIT → KC** | Role-change API calls (`/egov-hrms`, `/user`) | token-exchange-svc intercepts response, mirrors role changes to the tenant's KC realm via Admin API |
 
 ## Sequence Diagrams
 
@@ -153,11 +157,13 @@ KC → DIGIT sync path. DIGIT is always the source of truth.
 
 ### New User (First Login)
 
-1. User authenticates with Keycloak (password or Google SSO)
-2. JWT includes `realm_access.roles` (e.g., `["digit-admin", "SUPERUSER", "EMPLOYEE", "GRO", "PGR_LME", "DGRO", "CSR", "default-roles-digit-sandbox"]`)
-3. token-exchange-svc filters to known DIGIT roles: `["SUPERUSER", "EMPLOYEE", "GRO", "PGR_LME", "DGRO", "CSR"]`
-4. Creates DIGIT user with these roles + CITIZEN (always added)
-5. Caches user in Redis
+1. User authenticates with Keycloak (password or Google SSO) in the realm matching their state root (e.g. `pg`)
+2. JWT includes `realm_access.roles` (e.g., `["SUPERUSER", "EMPLOYEE", "GRO", "PGR_LME", "DGRO", "CSR", "default-roles-pg"]`) and `groups` (e.g., `["pg.citya"]`)
+3. token-exchange-svc validates the JWT against the realm's JWKS endpoint
+4. Filters to known DIGIT roles: `["SUPERUSER", "EMPLOYEE", "GRO", "PGR_LME", "DGRO", "CSR"]`
+5. Creates DIGIT user with these roles + CITIZEN (always added), scoped to the state root
+6. Syncs user to the KC realm: assigns realm roles and adds to the city group
+7. Caches user in Redis
 
 ### Returning User (Roles Unchanged)
 
@@ -232,20 +238,24 @@ Assigning `digit-admin` to a user gives them all 6 roles at once.
 ### Via Keycloak Admin Console
 
 1. Open https://api.egov.theflywheel.in/auth/admin/
-2. Switch to **digit-sandbox** realm
+2. Switch to the realm matching the state root (e.g. **pg**, **mz**)
 3. **Users** > search for user > **Role mapping** tab
 4. Click **Assign role** > filter realm roles > select roles > **Assign**
+
+Each state root has its own realm with the same set of DIGIT roles. Users only appear in the realm they belong to.
 
 ### Via Keycloak Admin API
 
 ```bash
-# Get admin token
+# Get admin token (always authenticate against the master realm)
 KC_TOKEN=$(curl -s -X POST \
   'https://api.egov.theflywheel.in/auth/realms/master/protocol/openid-connect/token' \
   -d 'client_id=admin-cli&grant_type=password&username=admin&password=admin' \
   | jq -r .access_token)
 
-KC_URL="https://api.egov.theflywheel.in/auth/admin/realms/digit-sandbox"
+# Set the realm for the state root you want to manage
+REALM="pg"  # or "mz", "ke", etc.
+KC_URL="https://api.egov.theflywheel.in/auth/admin/realms/$REALM"
 
 # Find user by email
 USER_ID=$(curl -s "$KC_URL/users?email=user@example.com" \
@@ -257,14 +267,12 @@ curl -X POST "$KC_URL/users/$USER_ID/role-mappings/realm" \
   -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \
   -d "[$ROLE]"
 
-# Assign digit-admin composite
-ROLE=$(curl -s "$KC_URL/roles/digit-admin" -H "Authorization: Bearer $KC_TOKEN")
-curl -X POST "$KC_URL/users/$USER_ID/role-mappings/realm" \
-  -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \
-  -d "[$ROLE]"
-
 # View user's effective roles
 curl -s "$KC_URL/users/$USER_ID/role-mappings/realm/composite" \
+  -H "Authorization: Bearer $KC_TOKEN" | jq '.[].name'
+
+# View user's group membership (shows city tenants)
+curl -s "$KC_URL/users/$USER_ID/groups" \
   -H "Authorization: Bearer $KC_TOKEN" | jq '.[].name'
 
 # Remove a role
@@ -272,15 +280,24 @@ ROLE=$(curl -s "$KC_URL/roles/GRO" -H "Authorization: Bearer $KC_TOKEN")
 curl -X DELETE "$KC_URL/users/$USER_ID/role-mappings/realm" \
   -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \
   -d "[$ROLE]"
+
+# List all realms (one per state root)
+curl -s "https://api.egov.theflywheel.in/auth/admin/realms" \
+  -H "Authorization: Bearer $KC_TOKEN" | jq '.[].realm'
 ```
 
 ### Auto-Assignment via IdP Mapper
 
-Currently configured: all Google SSO users get `digit-admin` via the `auto-digit-admin` IdP mapper.
+IdP mappers are configured **per realm**. Each realm can have its own identity
+providers and auto-role-assignment rules. For example, realm `pg` might auto-assign
+`digit-admin` to all Google SSO users, while realm `mz` uses a different provider.
 
-To change which role is auto-assigned:
+To configure auto-role-assignment for a specific realm:
 
 ```bash
+REALM="pg"  # the state root realm to configure
+KC_URL="https://api.egov.theflywheel.in/auth/admin/realms/$REALM"
+
 # List current mappers
 curl -s "$KC_URL/identity-provider/instances/google/mappers" \
   -H "Authorization: Bearer $KC_TOKEN" | jq .
@@ -301,6 +318,10 @@ curl -X POST "$KC_URL/identity-provider/instances/google/mappers" \
     "config": { "syncMode": "INHERIT", "role": "EMPLOYEE" }
   }'
 ```
+
+Note: Identity providers must be set up independently in each realm. The realm
+template (`realm-template.json`) ships with an empty `identityProviders` array
+-- add providers per-realm via the admin console or API after provisioning.
 
 ## Filtering Logic
 
@@ -354,41 +375,77 @@ State root (e.g. "mz")
 Keycloak uses **realms** as the top-level isolation boundary. Each realm has its
 own users, roles, identity providers, and clients.
 
-**Current setup: single realm `digit-sandbox`.**
+**Current setup: one realm per DIGIT state root.**
 
 ```
 Keycloak
-└── digit-sandbox (realm)
-    ├── Realm Roles: SUPERUSER, EMPLOYEE, GRO, PGR_LME, ...
-    ├── Composite Roles: digit-admin
-    ├── Identity Providers: google
-    ├── Clients: digit-sandbox-ui
-    └── Users: all users across all tenants
+├── pg (realm)
+│   ├── Realm Roles: CITIZEN, EMPLOYEE, SUPERUSER, GRO, PGR_LME, DGRO, CSR, ...
+│   ├── Groups: pg.citya, pg.cityb
+│   ├── Clients: digit-ui (public OIDC + PKCE)
+│   └── Users: users operating on pg.* tenants
+│
+├── mz (realm)
+│   ├── Realm Roles: CITIZEN, EMPLOYEE, SUPERUSER, GRO, PGR_LME, DGRO, CSR, ...
+│   ├── Groups: mz.maputo, mz.chimoio
+│   ├── Clients: digit-ui
+│   └── Users: users operating on mz.* tenants
+│
+└── master (admin realm — Keycloak internal)
 ```
 
-### Why a Single Realm
+### Current: Realm-per-State
 
-| Approach | Pros | Cons |
-|----------|------|------|
-| **Single realm** (current) | Simple, one user pool, one IdP config, roles map 1:1 | No KC-level tenant isolation |
-| **Realm per state root** | KC-native isolation between states | Duplicate IdP config, users can't cross states, complex provisioning |
-| **Realm per city** | Maximum isolation | Unmanageable at scale, DIGIT doesn't isolate at city level anyway |
+Each DIGIT state root maps to exactly one Keycloak realm. City tenants are
+represented as **groups** within the realm.
 
-A single realm is the right fit because:
+| DIGIT Concept | Keycloak Concept | Example |
+|---------------|-----------------|---------|
+| State root (`pg`) | Realm (`pg`) | `/realms/pg` |
+| City tenant (`pg.citya`) | Group within realm | Group `pg.citya` in realm `pg` |
+| DIGIT role (`GRO`) | Realm role (`GRO`) | Same name in every realm |
+| User | User (realm-scoped) | Exists in exactly one realm |
 
-1. **DIGIT handles tenant scoping, not Keycloak.** Keycloak answers "who is this
-   user and what can they do?" (authentication + capabilities). DIGIT answers
-   "where can they do it?" (tenant-scoped authorization). Duplicating tenant
-   isolation in KC would be redundant.
+**Why realm-per-state:**
 
-2. **Roles are capability-based, not tenant-scoped.** `GRO` means "can route
-   grievances" — the same capability regardless of which state or city. The
-   tenant scoping happens when token-exchange-svc tags `tenantId: "pg"` on the
-   role object in DIGIT.
+1. **KC-native tenant isolation.** Each state has its own user pool, roles,
+   sessions, and IdP configuration. A breach or misconfiguration in one state
+   realm does not affect others.
 
-3. **Users can exist across tenants.** A DIGIT admin may operate on `pg.citya`
-   and `mz.maputo`. With a single realm, they log in once and
-   token-exchange-svc resolves the correct tenant from the API request.
+2. **Independent IdP configuration.** Different states can use different identity
+   providers (e.g. state `pg` uses Google SSO, state `mz` uses Microsoft Entra)
+   without sharing client credentials.
+
+3. **Roles are replicated, not shared.** Each realm gets the same set of DIGIT
+   roles from `keycloak/realm-template.json`. `GRO` in realm `pg` and `GRO` in
+   realm `mz` are independent role objects, but carry the same meaning.
+
+4. **City-level grouping via KC groups.** Groups like `pg.citya` allow
+   fine-grained user-to-city mapping within a realm. The `groups` claim in the
+   JWT carries the user's city memberships.
+
+### Template-Based Realm Provisioning
+
+Realms are provisioned automatically on startup from `keycloak/realm-template.json`.
+The template contains all 21 DIGIT roles, the `digit-ui` client configuration,
+a `groups` client scope mapper, and security settings.
+
+The `DIGIT_TENANTS` env var drives provisioning:
+
+```bash
+# Format: "root:city1,city2;root2:city3"
+DIGIT_TENANTS="pg:pg.citya,pg.cityb;mz:mz.maputo,mz.chimoio"
+```
+
+On startup, `syncTenantRealms()` in `kc-admin.ts`:
+1. Parses `DIGIT_TENANTS` into a map of `{root → [cities]}`
+2. For each root, calls `createRealm(root, cities)`:
+   - Renders `realm-template.json` with `__REALM_NAME__` replaced by the root
+   - Creates the realm via KC Admin API (`POST /admin/realms`)
+   - Creates a group for each city tenant
+3. If the realm already exists (409), syncs groups only (adds missing ones)
+
+This is idempotent — running it multiple times is safe.
 
 ### How Tenant Resolution Works
 
@@ -399,21 +456,28 @@ A single realm is the right fit because:
     request/_search
   Body: { tenantId: "pg.citya" }
           │
-          │ JWT has realm_access.roles: [GRO, EMPLOYEE]
-          │ (no tenant info in KC — just capabilities)
+          │ JWT issued by realm "pg"
+          │ realm_access.roles: [GRO, EMPLOYEE]
+          │ groups: ["pg.citya"]
           ▼
-  Extract tenantId from request body ──────────────────>  rootTenant("pg.citya") → "pg"
-                                                          │
-                                                          ▼
-                                                    Create/sync user with roles:
-                                                    [{ code: "GRO", tenantId: "pg" },
-                                                     { code: "EMPLOYEE", tenantId: "pg" },
-                                                     { code: "CITIZEN", tenantId: "pg" }]
+  Validate JWT against            ──────────────────>  rootTenant("pg.citya") → "pg"
+  /realms/pg/.../certs                                  │
+                                                        ▼
+                                                  Create/sync user with roles:
+                                                  [{ code: "GRO", tenantId: "pg" },
+                                                   { code: "EMPLOYEE", tenantId: "pg" },
+                                                   { code: "CITIZEN", tenantId: "pg" }]
+                                                        │
+                                                        ▼
+                                                  Sync back to KC:
+                                                  - assignRealmRoles("pg", sub, roles)
+                                                  - addUserToGroup("pg", sub, "pg.citya")
 ```
 
-The `rootTenant()` function in `digit-client.ts` extracts the state root:
+The `rootTenant()` function extracts the state root:
 
 ```typescript
+// tenantId "pg.citya" → realm "pg"
 export function rootTenant(tenantId: string): string {
   return tenantId.split(".")[0];
 }
@@ -422,41 +486,50 @@ export function rootTenant(tenantId: string): string {
 Roles are always tagged to the state root, never to a specific city. DIGIT's
 access control layer (per-service) handles city-level authorization.
 
-### Multi-State Users
+### JWT Structure (Realm-Scoped)
 
-If a user needs to operate across multiple state roots (e.g. `pg` and `mz`),
-they need roles tagged to each root in DIGIT. The current implementation caches
-per `{sub}:{tenantId}`, so switching between `pg.citya` and `mz.maputo`
-triggers separate DIGIT user lookups and role syncs.
+A JWT issued by realm `pg` looks like:
 
-**Keycloak roles remain the same** — `GRO` in KC is `GRO` everywhere.
-token-exchange-svc maps it to the correct tenant based on the request context.
-
-### Future: Realm-per-State
-
-If DIGIT deployments need stronger isolation between state roots (e.g.
-separate Keycloak admin consoles per state, independent IdP configs), the
-architecture can evolve to realm-per-state:
-
-```
-Keycloak
-├── pg (realm) — roles, users, IdP for pg.*
-├── mz (realm) — roles, users, IdP for mz.*
-└── master (admin realm)
+```json
+{
+  "iss": "https://api.egov.theflywheel.in/auth/realms/pg",
+  "sub": "a1b2c3d4-...",
+  "email": "alice@example.com",
+  "realm_access": {
+    "roles": ["CITIZEN", "EMPLOYEE", "GRO", "PGR_LME", "default-roles-pg"]
+  },
+  "groups": ["pg.citya"]
+}
 ```
 
-This would require:
-- token-exchange-svc to map `rootTenant(tenantId)` → KC realm name
-- Separate JWKS endpoints per realm (`/realms/{root}/protocol/openid-connect/certs`)
-- Separate client registrations per realm
-- Users would not cross state boundaries via a single login
+Key points:
+- `iss` identifies the realm (and therefore the state root)
+- `realm_access.roles` are scoped to that realm
+- `groups` carries city-tenant membership
+- Unknown roles (like `default-roles-pg`) are filtered out by token-exchange-svc
 
-This is **not needed now** — the single-realm approach is simpler and sufficient
-for the current deployment.
+### Multi-State Deployments
+
+Users exist in exactly one realm. If a deployment spans multiple states, each
+state is a separate realm with separate users, roles, and IdP configs.
+
+A user operating across multiple states would need separate accounts in each
+realm. This matches DIGIT's model where roles are scoped to a state root and
+cross-state access requires separate role assignments.
+
+The `DIGIT_TENANTS` env var supports multiple state roots:
+
+```bash
+DIGIT_TENANTS="pg:pg.citya,pg.cityb;mz:mz.maputo,mz.chimoio"
+```
+
+This creates two realms (`pg` and `mz`) with their respective city groups.
 
 ## Cache Behavior
 
 - Roles are cached in Redis with 7-day TTL (key: `keycloak:{sub}:{tenantId}`)
-- Role changes in Keycloak take effect on the next API call (not instant — requires a new JWT)
+- The `sub` is scoped to the KC realm, so users in different realms have different subs
+- Role changes in Keycloak take effect on the next API call (not instant -- requires a new JWT)
 - To force immediate re-sync: clear the Redis cache key for the user
 - Role comparison is set-based: additions and removals are both detected
+- When `TENANT_SYNC_ENABLED=true`, role changes are synced back to the user's KC realm (fire-and-forget)

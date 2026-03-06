@@ -40,11 +40,14 @@ Neither path affects the other. The existing DIGIT auth is fully preserved.
 
 | URL | Purpose |
 |-----|---------|
-| `https://api.egov.theflywheel.in/auth/admin/` | Keycloak admin console |
-| `https://api.egov.theflywheel.in/auth/realms/digit-sandbox/account/` | User self-service portal |
-| `https://api.egov.theflywheel.in/auth/realms/digit-sandbox/.well-known/openid-configuration` | OIDC discovery |
+| `https://api.egov.theflywheel.in/auth/admin/` | Keycloak admin console (all realms) |
+| `https://api.egov.theflywheel.in/auth/realms/{realm}/account/` | User self-service portal (per realm) |
+| `https://api.egov.theflywheel.in/auth/realms/{realm}/.well-known/openid-configuration` | OIDC discovery (per realm) |
 | `https://api.egov.theflywheel.in/kc/healthz` | Token-exchange-svc health |
 | `https://api.egov.theflywheel.in/kc/<digit-path>` | JWT-protected DIGIT API proxy |
+
+Replace `{realm}` with the state root code (e.g. `pg`, `mz`). The `digit-sandbox` realm
+from the initial import still exists but new tenants use realm-per-state-root.
 
 **Admin credentials**: `admin` / `admin` (change in production via `KEYCLOAK_ADMIN_PASSWORD` env var)
 
@@ -69,16 +72,28 @@ Key environment variables:
 | `KEYCLOAK_ADMIN_PASSWORD` | `admin` (override via env) | Admin password |
 
 ### token-exchange-svc
-Node.js service that validates Keycloak JWTs and proxies requests to DIGIT backends with injected system auth.
+Node.js service that validates Keycloak JWTs and proxies requests to DIGIT backends with injected system auth. Supports multi-realm JWT validation and bidirectional role sync.
 
 Key environment variables:
 | Variable | Value | Purpose |
 |----------|-------|---------|
-| `KEYCLOAK_ISSUER` | `https://api.egov.theflywheel.in/auth/realms/digit-sandbox` | Must match JWT `iss` claim |
+| `KEYCLOAK_ISSUER` | `https://api.egov.theflywheel.in/auth/realms/digit-sandbox` | Default realm issuer (fallback for single-realm mode) |
 | `KEYCLOAK_JWKS_URI` | `http://keycloak:8180/auth/realms/...` | Internal URL for fetching signing keys |
 | `DIGIT_USER_HOST` | `http://egov-user:8107` | DIGIT user service |
 | `DIGIT_SYSTEM_USERNAME` | `ADMIN` | System account for forwarding requests |
 | `REDIS_HOST` | `redis` | Cache for resolved users |
+
+#### KC Admin / Tenant Sync environment variables:
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `KEYCLOAK_ADMIN_URL` | `http://localhost:8180` | Keycloak base URL for Admin API calls |
+| `KEYCLOAK_ADMIN_USERNAME` | `admin` | Admin username for KC Admin API authentication |
+| `KEYCLOAK_ADMIN_PASSWORD` | `admin` | Admin password (override via env or Docker secret) |
+| `KEYCLOAK_ADMIN_REALM` | `master` | Realm used for admin token acquisition |
+| `KEYCLOAK_ADMIN_CLIENT_ID` | `admin-cli` | Client ID for admin token requests |
+| `TENANT_SYNC_ENABLED` | `true` | Enable realm-per-tenant provisioning and bidirectional role sync |
+| `DIGIT_MDMS_HOST` | `""` | DIGIT MDMS host for dynamic tenant discovery (empty = use `DIGIT_TENANTS`) |
+| `DIGIT_TENANTS` | `""` | Static tenant map: `"pg:pg.citya,pg.cityb;mz:mz.maputo"` |
 
 ## Startup Order
 
@@ -97,43 +112,49 @@ Kong doesn't depend on the Keycloak services — it handles 502s gracefully unti
 
 ### Step 1: Create Google OAuth Credentials
 
-1. Go to [Google Cloud Console → APIs & Services → Credentials](https://console.cloud.google.com/apis/credentials)
-2. Click **Create Credentials** → **OAuth client ID**
+1. Go to [Google Cloud Console -> APIs & Services -> Credentials](https://console.cloud.google.com/apis/credentials)
+2. Click **Create Credentials** -> **OAuth client ID**
 3. Application type: **Web application**
-4. Name: `DIGIT Sandbox Keycloak`
-5. Authorized redirect URIs — add:
+4. Name: `DIGIT Keycloak - {realm}` (e.g. `DIGIT Keycloak - pg`)
+5. Authorized redirect URIs -- add one for each realm that needs Google SSO:
    ```
-   https://api.egov.theflywheel.in/auth/realms/digit-sandbox/broker/google/endpoint
+   https://api.egov.theflywheel.in/auth/realms/pg/broker/google/endpoint
+   https://api.egov.theflywheel.in/auth/realms/mz/broker/google/endpoint
    ```
 6. Click **Create** and note the **Client ID** and **Client Secret**
+
+Note: You can use the same Google OAuth app for multiple realms (add multiple
+redirect URIs), or create separate apps per realm for isolation.
 
 ### Step 2: Configure in Keycloak
 
 1. Open [Keycloak Admin Console](https://api.egov.theflywheel.in/auth/admin/)
-2. Select realm **digit-sandbox** (dropdown in sidebar)
-3. Go to **Identity providers** → **Add provider** → **Google**
+2. Select the target realm (e.g. **pg**) from the dropdown in the sidebar
+3. Go to **Identity providers** -> **Add provider** -> **Google**
 4. Fill in:
    - **Client ID**: from Google Cloud Console
    - **Client Secret**: from Google Cloud Console
    - Leave other defaults (scopes: `openid email profile`)
 5. Click **Save**
+6. Repeat for each realm that needs Google SSO
 
-The Keycloak login page will now show a **"Login with Google"** button.
+The Keycloak login page for that realm will now show a **"Login with Google"** button.
 
 ### Step 3: Test
 
-1. Open: `https://api.egov.theflywheel.in/auth/realms/digit-sandbox/account/`
-2. Click **Sign in** → you should see the Google SSO option
-3. After Google login, the user appears in Keycloak under **Users**
+1. Open: `https://api.egov.theflywheel.in/auth/realms/pg/account/` (replace `pg` with your realm)
+2. Click **Sign in** -- you should see the Google SSO option
+3. After Google login, the user appears in Keycloak under **Users** in that realm
 
 ### Other SSO Providers
 
 The same process works for GitHub, Microsoft, Apple, or any OIDC/SAML provider:
-- **Identity providers** → **Add provider** → choose provider
+- **Identity providers** -> **Add provider** -> choose provider
 - Each provider needs its own OAuth app and redirect URI:
   ```
-  https://api.egov.theflywheel.in/auth/realms/digit-sandbox/broker/<provider-id>/endpoint
+  https://api.egov.theflywheel.in/auth/realms/{realm}/broker/<provider-id>/endpoint
   ```
+- Each realm can have different IdP configurations (e.g. `pg` uses Google, `mz` uses Microsoft)
 
 ## Role Mapping
 
@@ -169,44 +190,82 @@ DIGIT roles answer: **"What can this person do in DIGIT?"**
 
 Examples: `CITIZEN`, `EMPLOYEE`, `GRO` (Grievance Routing Officer), `PGR_LME` (Last Mile Employee)
 
-### Keycloak → DIGIT Role Sync (Implemented)
+### Bidirectional Role Sync (Implemented)
 
-The token-exchange-svc reads `realm_access.roles` from the Keycloak JWT and maps them directly to DIGIT roles. Only known DIGIT roles are synced; unknown Keycloak roles (like `default-roles-digit-sandbox`) are ignored. `CITIZEN` is always included.
+Role sync works in both directions between Keycloak and DIGIT:
 
-**How it works:**
+**KC -> DIGIT (on every API request):**
+- token-exchange-svc reads `realm_access.roles` from the JWT (issued by the state root's realm)
+- Only known DIGIT roles are synced; unknown Keycloak roles (like `default-roles-pg`) are ignored
+- `CITIZEN` is always included
 - On first login: DIGIT user is created with roles from the JWT
 - On subsequent logins: roles are compared with cache; if changed, DIGIT user is updated
-- 21 DIGIT roles are recognized (see [role-management.md](role-management.md) for the full list)
 
-**`digit-admin` composite role** bundles SUPERUSER + EMPLOYEE + GRO + PGR_LME + DGRO + CSR. Assigning `digit-admin` in Keycloak gives a user full DIGIT admin access.
+**DIGIT -> KC (on role change, when `TENANT_SYNC_ENABLED=true`):**
+- After resolving a user, token-exchange-svc syncs their DIGIT roles back to the KC realm
+- Calls `assignRealmRoles(root, sub, roleCodes)` to mirror roles to the correct realm
+- Adds user to the city group (e.g. `pg.citya`) via `addUserToGroupInRealm()`
+- This is fire-and-forget -- failures are logged but do not block the request
 
-**Auto-admin for Google SSO:** An IdP mapper (`auto-digit-admin`) assigns `digit-admin` to all Google SSO users. Restrict which domains can use Google SSO at the Google OAuth app level.
+21 DIGIT roles are recognized (see [role-management.md](role-management.md) for the full list).
 
 See [role-management.md](role-management.md) for detailed role management documentation.
 
 ## Realm Configuration
 
-The `digit-sandbox` realm is configured in `keycloak/realm-export.json`:
+### Realm-per-Tenant Architecture
+
+Instead of a single `digit-sandbox` realm, the system now provisions **one realm per
+DIGIT state root** using a template. The `digit-sandbox` realm export
+(`keycloak/realm-export.json`) is used for Keycloak's initial import on first boot.
+Subsequent realms are created dynamically from `keycloak/realm-template.json`.
+
+### Realm Template
+
+The template (`keycloak/realm-template.json`) defines the baseline configuration for
+every realm. The `__REALM_NAME__` placeholder is replaced with the state root code:
 
 | Setting | Value | Notes |
 |---------|-------|-------|
-| Registration | Enabled | Users can self-register |
+| Registration | Disabled | Users are provisioned via SSO or admin |
 | Login with email | Enabled | Email is the primary identifier |
-| Email verification | Disabled | Sandbox — no email verification needed |
 | Password policy | `length(8)` | Minimum 8 characters |
 | Access token lifespan | 15 minutes | Short-lived for security |
 | SSO session idle | 30 minutes | Session expires after inactivity |
 | SSO session max | 7 days | Maximum session duration |
-| Brute force protection | Enabled | 5 failures → 60s lockout |
-| PKCE | Required (S256) | For the `digit-sandbox-ui` client |
+| Brute force protection | Enabled | 5 failures before lockout |
+| Default role | `CITIZEN` | All users get CITIZEN automatically |
+| Roles | 21 DIGIT roles | Full set from DIGIT access-control |
+| PKCE | Required (S256) | For the `digit-ui` client |
 
-### Client: digit-sandbox-ui
+### Client: digit-ui
 
-A public OIDC client for browser-based apps:
-- **Client ID**: `digit-sandbox-ui`
+Each realm gets a `digit-ui` public OIDC client (from the template):
+- **Client ID**: `digit-ui`
 - **Flow**: Authorization Code + PKCE (no client secret)
 - **Redirect URIs**: `http://localhost:*`, `https://*.egov.theflywheel.in/*`
 - **Web Origins**: `http://localhost:3000`, `http://localhost:5173`, `https://*.egov.theflywheel.in`
+
+### Groups (City Tenants)
+
+City tenants are created as groups within the realm. For example, with
+`DIGIT_TENANTS="pg:pg.citya,pg.cityb"`, realm `pg` gets two groups:
+`pg.citya` and `pg.cityb`. A `groups` client scope mapper includes group
+membership in the JWT's `groups` claim.
+
+### Provisioning Flow
+
+On startup (when `TENANT_SYNC_ENABLED=true`):
+
+1. token-exchange-svc authenticates with KC Admin API (master realm)
+2. Parses `DIGIT_TENANTS` into `{root -> [cities]}` map
+3. For each root:
+   - Creates realm from template (or skips if 409 = already exists)
+   - Creates city groups within the realm (idempotent)
+4. Logs sync summary
+
+If `DIGIT_MDMS_HOST` is set, tenants can alternatively be loaded from DIGIT MDMS
+at startup (not yet implemented -- `DIGIT_TENANTS` is the current mechanism).
 
 ## Operations
 
@@ -314,17 +373,25 @@ Two routes added to `kong/kong.yml`:
 
 ### JWT issuer mismatch (401 from token-exchange-svc)
 
-The `KEYCLOAK_ISSUER` env var on token-exchange-svc must exactly match the `iss` claim in JWTs issued by Keycloak. Verify:
+With realm-per-tenant, the JWT `iss` claim includes the realm name (e.g.
+`https://api.egov.theflywheel.in/auth/realms/pg`). The token-exchange-svc
+validates JWTs by extracting the realm from the issuer and fetching the
+corresponding JWKS. Verify:
 
 ```bash
-# Check what Keycloak reports as its issuer
-curl -s https://api.egov.theflywheel.in/auth/realms/digit-sandbox/.well-known/openid-configuration | jq .issuer
+# Check what Keycloak reports as the issuer for a realm
+curl -s https://api.egov.theflywheel.in/auth/realms/pg/.well-known/openid-configuration | jq .issuer
 
-# Check what token-exchange-svc expects
+# Check that the realm exists
+curl -s https://api.egov.theflywheel.in/auth/realms/pg/.well-known/openid-configuration | jq .jwks_uri
+
+# For fallback/single-realm mode, check the configured issuer
 docker inspect digit-token-exchange --format '{{range .Config.Env}}{{println .}}{{end}}' | grep KEYCLOAK_ISSUER
 ```
 
-These must match. If they don't, update `KEYCLOAK_ISSUER` in docker-compose and restart.
+If using a single-realm setup, `KEYCLOAK_ISSUER` must exactly match the `iss`
+claim. With multi-realm, the service dynamically resolves the JWKS endpoint from
+the JWT issuer.
 
 ### Keycloak admin console redirects to wrong port
 
@@ -366,3 +433,59 @@ Or run the cleanup script:
 ```bash
 cd /root/DIGIT-keycloak-overlay && npx tsx tests/integration/cleanup.ts
 ```
+
+### Realm not created on startup
+
+If `syncTenantRealms` logs "No tenants configured", check:
+
+```bash
+# Verify DIGIT_TENANTS is set
+docker inspect digit-token-exchange --format '{{range .Config.Env}}{{println .}}{{end}}' | grep DIGIT_TENANTS
+
+# Verify TENANT_SYNC_ENABLED is not "false"
+docker inspect digit-token-exchange --format '{{range .Config.Env}}{{println .}}{{end}}' | grep TENANT_SYNC
+
+# Check token-exchange-svc startup logs for sync output
+docker compose -f docker-compose.deploy.yaml logs token-exchange-svc | grep -i "realm\|sync\|tenant"
+```
+
+The format must be `root:city1,city2;root2:city3` (colon separates root from cities,
+semicolon separates roots, comma separates cities).
+
+### KC Admin API authentication failure
+
+If realm creation fails with "KC admin auth failed: 401":
+
+```bash
+# Verify admin credentials work against the master realm
+curl -s -X POST 'http://localhost:18180/realms/master/protocol/openid-connect/token' \
+  -d 'client_id=admin-cli&grant_type=password&username=admin&password=admin'
+
+# Check KEYCLOAK_ADMIN_URL points to the correct host
+docker inspect digit-token-exchange --format '{{range .Config.Env}}{{println .}}{{end}}' | grep KEYCLOAK_ADMIN
+```
+
+### User appears in wrong realm
+
+Users are resolved based on the JWT issuer. If a user logged into realm `pg` but
+sends a request with `tenantId: "mz.maputo"`, the JWT validation will still use
+the `pg` realm JWKS. The user needs to authenticate against realm `mz` to
+operate on `mz.*` tenants.
+
+### Groups not appearing in JWT
+
+Verify the `groups` client scope is configured in the realm:
+
+```bash
+KC_TOKEN=$(curl -s -X POST \
+  'http://localhost:18180/realms/master/protocol/openid-connect/token' \
+  -d 'client_id=admin-cli&grant_type=password&username=admin&password=admin' \
+  | jq -r .access_token)
+
+# Check client scopes for the digit-ui client in realm "pg"
+curl -s "http://localhost:18180/admin/realms/pg/clients" \
+  -H "Authorization: Bearer $KC_TOKEN" | jq '.[] | select(.clientId=="digit-ui") | .defaultClientScopes'
+```
+
+The `groups` scope should be listed. If missing, the realm template may not have
+been applied correctly -- delete and recreate the realm, or add the scope manually.
