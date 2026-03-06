@@ -169,28 +169,20 @@ DIGIT roles answer: **"What can this person do in DIGIT?"**
 
 Examples: `CITIZEN`, `EMPLOYEE`, `GRO` (Grievance Routing Officer), `PGR_LME` (Last Mile Employee)
 
-**Current behavior:**
-- The token-exchange-svc auto-provisions all Keycloak users as DIGIT `CITIZEN` users
-- DIGIT roles like `GRO`, `PGR_LME`, `EMPLOYEE` must be assigned separately via HRMS
+### Keycloak → DIGIT Role Sync (Implemented)
 
-**Manual DIGIT role assignment:**
-- Use the MCP tools: `employee_create` or `user_role_add`
-- Or via DIGIT Admin UI → HRMS → Employee Management
+The token-exchange-svc reads `realm_access.roles` from the Keycloak JWT and maps them directly to DIGIT roles. Only known DIGIT roles are synced; unknown Keycloak roles (like `default-roles-digit-sandbox`) are ignored. `CITIZEN` is always included.
 
-### Keycloak → DIGIT Role Mapping (Not Yet Implemented)
+**How it works:**
+- On first login: DIGIT user is created with roles from the JWT
+- On subsequent logins: roles are compared with cache; if changed, DIGIT user is updated
+- 21 DIGIT roles are recognized (see [role-management.md](role-management.md) for the full list)
 
-A future enhancement to the token-exchange-svc could read `realm_access.roles` from the JWT and automatically assign corresponding DIGIT roles:
+**`digit-admin` composite role** bundles SUPERUSER + EMPLOYEE + GRO + PGR_LME + DGRO + CSR. Assigning `digit-admin` in Keycloak gives a user full DIGIT admin access.
 
-```
-Keycloak role          → DIGIT role
-─────────────────────────────────────
-grievance-officer      → GRO, EMPLOYEE
-field-worker           → PGR_LME, EMPLOYEE
-admin                  → SUPERUSER, EMPLOYEE
-(default)              → CITIZEN
-```
+**Auto-admin for Google SSO:** An IdP mapper (`auto-digit-admin`) assigns `digit-admin` to all Google SSO users. Restrict which domains can use Google SSO at the Google OAuth app level.
 
-This would be implemented in `src/user-resolver.ts` during the lazy provisioning step. The mapping would be configurable via environment variables.
+See [role-management.md](role-management.md) for detailed role management documentation.
 
 ## Realm Configuration
 

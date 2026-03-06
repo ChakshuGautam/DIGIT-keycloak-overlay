@@ -54,16 +54,16 @@ npm run dev
 
 ## Test Summary
 
-30 tests across 10 files:
+35 tests across 10 files:
 
 | Suite | Tests | Coverage |
 |-------|-------|----------|
 | JWT validation | 6 | Valid, expired, missing, garbage tokens |
 | Redis cache | 4 | Set/get, delete, tenant scoping |
-| User resolver | 5 | Provision, cache hit, existing user, sync, tenant scope |
+| User resolver | 9 | Provision, cache hit, existing user, sync, tenant scope, role provisioning, role sync |
 | Route mapping | 4 | Path matching, unknown paths |
 | Auth flow (E2E) | 3 | Happy path, no auth, expired |
-| User provisioning (E2E) | 2 | New user, unique mobile numbers |
+| User provisioning (E2E) | 3 | New user, unique mobile numbers, JWT role provisioning |
 | Cache behavior (E2E) | 2 | Cache hit, pre-populated cache |
 | User sync (E2E) | 1 | Name change propagation |
 | Error handling (E2E) | 2 | Garbage token, unknown upstream |
