@@ -53,10 +53,11 @@ export function createEgovUserMock() {
 
   // POST /user/_search
   app.post("/user/_search", (req, res) => {
-    const { emailId, userName } = req.body;
+    const { emailId, userName, tenantId } = req.body;
     const matches = Array.from(users.values()).filter((u) => {
       if (emailId && u.emailId !== emailId) return false;
       if (userName && u.userName !== userName) return false;
+      if (tenantId && u.tenantId !== tenantId) return false;
       return true;
     });
     res.json({ user: matches.map((u) => ({ ...u, password: undefined })) });
