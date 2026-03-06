@@ -4,3 +4,4 @@ dist/
 .env
 .test-private-key.pem
 .test-public-key.json
+.worktrees/
