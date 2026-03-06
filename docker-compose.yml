@@ -1,0 +1,37 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    command: start-dev --import-realm
+    environment:
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_PORT: 8180
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    ports:
+      - "18180:8180"
+
+  token-exchange-svc:
+    build: .
+    environment:
+      DIGIT_USER_HOST: http://host.docker.internal:8107
+      DIGIT_SYSTEM_USERNAME: INTERNAL_MICROSERVICE_ROLE
+      DIGIT_SYSTEM_PASSWORD: eGov@123
+      DIGIT_SYSTEM_TENANT: pg
+      DIGIT_DEFAULT_TENANT: pg.citya
+      KEYCLOAK_ISSUER: http://keycloak:8180/realms/digit-sandbox
+      KEYCLOAK_JWKS_URI: http://keycloak:8180/realms/digit-sandbox/protocol/openid-connect/certs
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    ports:
+      - "18200:3000"
+    depends_on:
+      - redis
+      - keycloak

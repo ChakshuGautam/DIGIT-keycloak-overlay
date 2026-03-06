@@ -48,7 +48,8 @@ export async function proxyRequest(
           "Content-Length": req.headers["content-length"] || "",
         },
         body: req as any,
-        duplex: "half" as any,
+        // @ts-expect-error duplex is valid in Node.js fetch but not in @types/node
+        duplex: "half",
       });
 
       res.status(upstreamResp.status);
@@ -71,7 +72,8 @@ export async function proxyRequest(
         body: ["GET", "HEAD"].includes(req.method)
           ? undefined
           : (req as any),
-        duplex: "half" as any,
+        // @ts-expect-error duplex is valid in Node.js fetch but not in @types/node
+        duplex: "half",
       });
 
       res.status(upstreamResp.status);
