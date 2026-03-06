@@ -8,5 +8,11 @@ export default defineConfig({
     globalSetup: "./tests/setup.ts",
     setupFiles: ["./tests/worker-setup.ts"],
     include: ["tests/**/*.test.ts"],
+    pool: "forks",
+    fileParallelism: false,
+    sequence: {
+      // Run unit tests before E2E
+      files: "list",
+    },
   },
 });
