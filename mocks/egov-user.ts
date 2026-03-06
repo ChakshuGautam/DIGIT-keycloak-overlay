@@ -20,7 +20,7 @@ export function createEgovUserMock() {
     (req, res) => {
       const { username } = req.body;
       // System user login
-      if (username === "INTERNAL_MICROSERVICE_ROLE") {
+      if (username === "ADMIN" || username === "INTERNAL_MICROSERVICE_ROLE") {
         return res.json({
           access_token: SYSTEM_TOKEN,
           token_type: "bearer",
@@ -57,7 +57,12 @@ export function createEgovUserMock() {
     const matches = Array.from(users.values()).filter((u) => {
       if (emailId && u.emailId !== emailId) return false;
       if (userName && u.userName !== userName) return false;
-      if (tenantId && u.tenantId !== tenantId) return false;
+      // DIGIT stores users at root tenant — match root-to-root
+      if (tenantId) {
+        const searchRoot = tenantId.split(".")[0];
+        const userRoot = u.tenantId.split(".")[0];
+        if (searchRoot !== userRoot) return false;
+      }
       return true;
     });
     res.json({ user: matches.map((u) => ({ ...u, password: undefined })) });

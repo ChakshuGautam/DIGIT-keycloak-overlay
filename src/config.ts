@@ -3,8 +3,9 @@ export const config = {
 
   // DIGIT egov-user
   digitUserHost: process.env.DIGIT_USER_HOST || "http://localhost:8107",
-  digitSystemUsername: process.env.DIGIT_SYSTEM_USERNAME || "INTERNAL_MICROSERVICE_ROLE",
+  digitSystemUsername: process.env.DIGIT_SYSTEM_USERNAME || "ADMIN",
   digitSystemPassword: process.env.DIGIT_SYSTEM_PASSWORD || "eGov@123",
+  digitSystemUserType: process.env.DIGIT_SYSTEM_USER_TYPE || "EMPLOYEE",
   digitSystemTenant: process.env.DIGIT_SYSTEM_TENANT || "pg",
   digitDefaultTenant: process.env.DIGIT_DEFAULT_TENANT || "pg.citya",
 

@@ -8,12 +8,12 @@ beforeAll(() => {
 describe("resolveUpstream", () => {
   it("maps /pgr-services path to upstream", () => {
     const url = resolveUpstream("/pgr-services/v2/_search");
-    expect(url).toBe("http://pgr-services:8082/pgr-services/v2/_search");
+    expect(url).toBe("http://pgr-services:8080/pgr-services/v2/_search");
   });
 
   it("maps /mdms-v2 path to upstream", () => {
     const url = resolveUpstream("/mdms-v2/v1/_search");
-    expect(url).toBe("http://mdms-v2:8094/mdms-v2/v1/_search");
+    expect(url).toBe("http://egov-mdms-service:8094/mdms-v2/v1/_search");
   });
 
   it("returns null for unknown path", () => {

@@ -85,9 +85,22 @@ describe("resolveUser", () => {
     expect(user.name).toBe("Alice Johnson");
   });
 
-  it("scopes users by tenant", async () => {
+  it("same root tenant shares DIGIT user, but caches per city tenant", async () => {
+    // DIGIT stores users at root tenant (pg), not city tenant (pg.citya)
+    // So pg.citya and pg.cityb resolve to the same DIGIT user
     const user1 = await resolveUser(baseClaims, "pg.citya");
     const user2 = await resolveUser(baseClaims, "pg.cityb");
+    expect(user1.uuid).toBe(user2.uuid);
+    // But cache entries are separate per city tenant
+    const cached1 = await getCached("kc-sub-1", "pg.citya");
+    const cached2 = await getCached("kc-sub-1", "pg.cityb");
+    expect(cached1).not.toBeNull();
+    expect(cached2).not.toBeNull();
+  });
+
+  it("different root tenants create separate DIGIT users", async () => {
+    const user1 = await resolveUser(baseClaims, "pg.citya");
+    const user2 = await resolveUser(baseClaims, "statea.cityb");
     expect(user1.uuid).not.toBe(user2.uuid);
   });
 });

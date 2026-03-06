@@ -2,20 +2,26 @@ import { config } from "./config.js";
 
 const routeMap = new Map<string, string>();
 
-// Default DIGIT service routes (path prefix -> host:port)
+// Default DIGIT service routes — aligned with Kong kong.yml
 const DEFAULT_ROUTES: Record<string, string> = {
-  "/pgr-services": "pgr-services:8082",
+  "/pgr-services": "pgr-services:8080",
   "/egov-workflow-v2": "egov-workflow-v2:8109",
-  "/mdms-v2": "mdms-v2:8094",
-  "/egov-hrms": "egov-hrms:8098",
+  "/mdms-v2": "egov-mdms-service:8094",
+  "/egov-hrms": "egov-hrms:8092",
   "/boundary-service": "boundary-service:8081",
-  "/egov-filestore": "egov-filestore:8084",
+  "/filestore": "egov-filestore:8083",
+  "/egov-filestore": "egov-filestore:8083",
   "/egov-idgen": "egov-idgen:8088",
+  "/localization": "egov-localization:8096",
   "/egov-localization": "egov-localization:8096",
+  "/access": "egov-accesscontrol:8090",
   "/egov-accesscontrol": "egov-accesscontrol:8090",
-  "/egov-indexer": "egov-indexer:8095",
-  "/inbox": "inbox:8097",
+  "/egov-indexer": "egov-indexer:8080",
+  "/inbox": "inbox:8080",
   "/user": "egov-user:8107",
+  "/egov-enc-service": "egov-enc-service:1234",
+  "/egov-bndry-mgmnt": "egov-bndry-mgmnt:8080",
+  "/common-persist": "egov-persister:8091",
 };
 
 export function initRoutes() {

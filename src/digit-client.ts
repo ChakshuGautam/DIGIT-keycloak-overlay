@@ -1,6 +1,19 @@
 import { config } from "./config.js";
 import type { DigitUser, DigitLoginResponse } from "./types.js";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
+
+// Generate a password that meets DIGIT's policy:
+// 8-15 chars, at least one uppercase, lowercase, digit, special (@#$%)
+function generatePassword(seed: string): string {
+  const hash = createHash("sha256").update(seed).digest("hex").slice(0, 6);
+  return `Kc${hash}@1`;  // 10 chars: uppercase K, lowercase c, 6 hex chars, @, digit
+}
+
+// DIGIT stores users at the state-root tenant level (e.g. "pg" not "pg.citya").
+// Extract root from any city-level tenant ID.
+export function rootTenant(tenantId: string): string {
+  return tenantId.split(".")[0];
+}
 
 let systemToken: string | null = null;
 let systemTokenRefreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -14,7 +27,7 @@ export async function initSystemToken(): Promise<string> {
     username: config.digitSystemUsername,
     password: config.digitSystemPassword,
     tenantId: config.digitSystemTenant,
-    userType: "SYSTEM",
+    userType: config.digitSystemUserType,
     grant_type: "password",
     scope: "read",
   });
@@ -48,16 +61,19 @@ export function stopTokenRefresh() {
 }
 
 export async function searchUser(
-  emailId: string,
+  emailOrUserName: string,
   tenantId: string,
 ): Promise<DigitUser | null> {
+  // Search by userName (not emailId) because DIGIT encrypts emails via
+  // egov-enc-service, making plaintext email searches unreliable.
+  // Our provisioning sets userName = email, so this works correctly.
   const resp = await fetch(digitUrl("/user/_search"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       RequestInfo: { apiId: "Rainmaker", authToken: systemToken },
-      emailId,
-      tenantId,
+      userName: emailOrUserName,
+      tenantId: rootTenant(tenantId),
       pageSize: 1,
     }),
   });
@@ -93,12 +109,12 @@ export async function createUser(params: {
         mobileNumber:
           params.phoneNumber ||
           `90000${String(mobileHash).padStart(5, "0")}`,
-        password: randomBytes(32).toString("hex"),
-        tenantId: params.tenantId,
+        password: generatePassword(params.keycloakSub),
+        tenantId: rootTenant(params.tenantId),
         type: "CITIZEN",
         active: true,
         roles: [
-          { code: "CITIZEN", name: "Citizen", tenantId: params.tenantId },
+          { code: "CITIZEN", name: "Citizen", tenantId: rootTenant(params.tenantId) },
         ],
       },
     }),

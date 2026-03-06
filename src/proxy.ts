@@ -14,6 +14,12 @@ export async function proxyRequest(
     return;
   }
 
+  // Preserve query string from original request
+  const queryString = req.originalUrl.includes("?")
+    ? req.originalUrl.slice(req.originalUrl.indexOf("?"))
+    : "";
+  const upstreamUrl = `${upstream}${queryString}`;
+
   const contentType = req.headers["content-type"] || "";
   const systemToken = getSystemToken();
 
@@ -25,7 +31,7 @@ export async function proxyRequest(
       body.RequestInfo.authToken = systemToken;
       body.RequestInfo.userInfo = digitUser;
 
-      const upstreamResp = await fetch(upstream, {
+      const upstreamResp = await fetch(upstreamUrl, {
         method: req.method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -38,7 +44,7 @@ export async function proxyRequest(
       res.send(responseBody);
     } else if (contentType.includes("multipart/form-data")) {
       // Multipart: stream body, pass token via query param
-      const url = new URL(upstream);
+      const url = new URL(upstreamUrl);
       url.searchParams.set("auth-token", systemToken);
 
       const upstreamResp = await fetch(url.toString(), {
@@ -59,7 +65,7 @@ export async function proxyRequest(
       res.send(responseBody);
     } else {
       // Unknown content type: pass-through with auth header
-      const upstreamResp = await fetch(upstream, {
+      const upstreamResp = await fetch(upstreamUrl, {
         method: req.method,
         headers: {
           ...Object.fromEntries(
