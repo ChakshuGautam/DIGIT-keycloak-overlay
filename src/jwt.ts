@@ -32,10 +32,20 @@ function createTracedRemoteJWKSet(url: URL, opts?: { cooldownDuration?: number }
   };
 }
 
-let jwks: ReturnType<typeof createTracedRemoteJWKSet>;
+const jwksCache = new Map<string, ReturnType<typeof createTracedRemoteJWKSet>>();
+let jwksUriOverride: string | undefined;
+
+function getJwks(realm: string): ReturnType<typeof createTracedRemoteJWKSet> {
+  if (!jwksCache.has(realm)) {
+    const uri = jwksUriOverride || `${config.keycloakAdminUrl}/realms/${realm}/protocol/openid-connect/certs`;
+    jwksCache.set(realm, createTracedRemoteJWKSet(new URL(uri)));
+  }
+  return jwksCache.get(realm)!;
+}
 
 export function initJwks(jwksUri?: string) {
-  jwks = createTracedRemoteJWKSet(new URL(jwksUri || config.keycloakJwksUri));
+  jwksUriOverride = jwksUri;
+  jwksCache.clear();
 }
 
 export async function validateJwt(
@@ -44,20 +54,30 @@ export async function validateJwt(
   if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
   const token = authHeader.slice(7);
   try {
-    const { payload } = await jwtVerify(token, jwks, {
-      issuer: config.keycloakIssuer,
-    });
-    if (!payload.sub || !payload.email) return null;
+    // Decode without full verification to extract issuer
+    const parts = token.split(".");
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+    const iss = payload.iss as string;
+    if (!iss) return null;
+
+    const realm = iss.split("/realms/").pop();
+    if (!realm) return null;
+
+    const jwks = getJwks(realm);
+    const { payload: verified } = await jwtVerify(token, jwks, { issuer: iss });
+
+    if (!verified.sub || !verified.email) return null;
     return {
-      sub: payload.sub,
-      email: payload.email as string,
-      name: (payload.name as string) || undefined,
+      sub: verified.sub,
+      email: verified.email as string,
+      name: (verified.name as string) || undefined,
       preferred_username:
-        (payload.preferred_username as string) || undefined,
-      email_verified: payload.email_verified as boolean | undefined,
-      phone_number: (payload.phone_number as string) || undefined,
-      realm_access: (payload.realm_access as { roles: string[] }) || undefined,
-      groups: (payload.groups as string[]) || undefined,
+        (verified.preferred_username as string) || undefined,
+      email_verified: verified.email_verified as boolean | undefined,
+      phone_number: (verified.phone_number as string) || undefined,
+      realm_access: (verified.realm_access as { roles: string[] }) || undefined,
+      groups: (verified.groups as string[]) || undefined,
+      realm,
     };
   } catch {
     return null;
