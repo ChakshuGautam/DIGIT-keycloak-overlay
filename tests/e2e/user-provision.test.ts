@@ -78,4 +78,29 @@ describe("E2E: user provisioning", () => {
     const c2 = await getCached("mobile-2", "pg.citya");
     expect(c1!.user.mobileNumber).not.toBe(c2!.user.mobileNumber);
   });
+
+  it("provisions user with roles from JWT realm_access", async () => {
+    const token = await signJwt({
+      sub: "role-user-1",
+      email: "roles@test.com",
+      name: "Role User",
+      realm_access: { roles: ["GRO", "EMPLOYEE"] },
+    });
+    await fetch(
+      `http://localhost:${getAppPort()}/pgr-services/v2/_search`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ RequestInfo: {}, tenantId: "pg.citya" }),
+      },
+    );
+    const cached = await getCached("role-user-1", "pg.citya");
+    const codes = cached!.user.roles.map((r: any) => r.code);
+    expect(codes).toContain("GRO");
+    expect(codes).toContain("EMPLOYEE");
+    expect(codes).toContain("CITIZEN");
+  });
 });

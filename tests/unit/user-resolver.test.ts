@@ -103,4 +103,43 @@ describe("resolveUser", () => {
     const user2 = await resolveUser(baseClaims, "statea.cityb");
     expect(user1.uuid).not.toBe(user2.uuid);
   });
+
+  it("provisions user with DIGIT roles from KC realm_access", async () => {
+    const claims: KCClaims = {
+      sub: "kc-roles-1",
+      email: "employee@example.com",
+      name: "Employee User",
+      realm_access: { roles: ["EMPLOYEE", "GRO", "default-roles-digit-sandbox"] },
+    };
+    const user = await resolveUser(claims, "pg.citya");
+    const roleCodes = user.roles.map(r => r.code);
+    expect(roleCodes).toContain("EMPLOYEE");
+    expect(roleCodes).toContain("GRO");
+    expect(roleCodes).toContain("CITIZEN");
+    expect(roleCodes).not.toContain("default-roles-digit-sandbox");
+  });
+
+  it("provisions user with only CITIZEN when no realm_access", async () => {
+    const claims: KCClaims = { sub: "kc-noroles-1", email: "plain@example.com" };
+    const user = await resolveUser(claims, "pg.citya");
+    expect(user.roles.map(r => r.code)).toEqual(["CITIZEN"]);
+  });
+
+  it("syncs roles on subsequent login when KC roles change", async () => {
+    const claims1: KCClaims = {
+      sub: "kc-rolesync-1", email: "sync@example.com", name: "Sync",
+    };
+    const user1 = await resolveUser(claims1, "pg.citya");
+    expect(user1.roles.map(r => r.code)).toEqual(["CITIZEN"]);
+
+    const claims2: KCClaims = {
+      ...claims1,
+      realm_access: { roles: ["SUPERUSER", "EMPLOYEE"] },
+    };
+    const user2 = await resolveUser(claims2, "pg.citya");
+    const roleCodes = user2.roles.map(r => r.code);
+    expect(roleCodes).toContain("SUPERUSER");
+    expect(roleCodes).toContain("EMPLOYEE");
+    expect(roleCodes).toContain("CITIZEN");
+  });
 });

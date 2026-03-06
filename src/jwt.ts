@@ -26,6 +26,7 @@ export async function validateJwt(
         (payload.preferred_username as string) || undefined,
       email_verified: payload.email_verified as boolean | undefined,
       phone_number: (payload.phone_number as string) || undefined,
+      realm_access: (payload.realm_access as { roles: string[] }) || undefined,
     };
   } catch {
     return null;

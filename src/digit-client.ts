@@ -88,7 +88,17 @@ export async function createUser(params: {
   tenantId: string;
   keycloakSub: string;
   phoneNumber?: string;
+  roles?: Array<{ code: string; name: string }>;
 }): Promise<DigitUser> {
+  const root = rootTenant(params.tenantId);
+  const citizenRole = { code: "CITIZEN", name: "Citizen", tenantId: root };
+  const roles = params.roles?.length
+    ? params.roles.map(r => ({ ...r, tenantId: root }))
+    : [citizenRole];
+  if (!roles.find(r => r.code === "CITIZEN")) {
+    roles.push(citizenRole);
+  }
+
   const mobileHash =
     parseInt(
       createHash("sha256")
@@ -110,12 +120,10 @@ export async function createUser(params: {
           params.phoneNumber ||
           `90000${String(mobileHash).padStart(5, "0")}`,
         password: generatePassword(params.keycloakSub),
-        tenantId: rootTenant(params.tenantId),
+        tenantId: root,
         type: "CITIZEN",
         active: true,
-        roles: [
-          { code: "CITIZEN", name: "Citizen", tenantId: rootTenant(params.tenantId) },
-        ],
+        roles,
       },
     }),
   });
@@ -137,6 +145,26 @@ export async function updateUser(
     body: JSON.stringify({
       RequestInfo: { apiId: "Rainmaker", authToken: systemToken },
       user: { uuid, ...updates },
+    }),
+  });
+}
+
+export async function updateUserRoles(
+  uuid: string,
+  tenantId: string,
+  roles: Array<{ code: string; name: string }>,
+): Promise<void> {
+  const root = rootTenant(tenantId);
+  const rolesWithTenant = roles.map(r => ({ ...r, tenantId: root }));
+  if (!rolesWithTenant.find(r => r.code === "CITIZEN")) {
+    rolesWithTenant.push({ code: "CITIZEN", name: "Citizen", tenantId: root });
+  }
+  await fetch(digitUrl("/user/users/_updatenovalidate"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      RequestInfo: { apiId: "Rainmaker", authToken: systemToken },
+      user: { uuid, roles: rolesWithTenant },
     }),
   });
 }

@@ -5,6 +5,9 @@ export interface KCClaims {
   preferred_username?: string;
   email_verified?: boolean;
   phone_number?: string;
+  realm_access?: {
+    roles: string[];
+  };
 }
 
 export interface DigitUser {
