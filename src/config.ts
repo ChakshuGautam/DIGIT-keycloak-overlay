@@ -10,8 +10,8 @@ export const config = {
   digitDefaultTenant: process.env.DIGIT_DEFAULT_TENANT || "pg.citya",
 
   // Keycloak
-  keycloakIssuer: process.env.KEYCLOAK_ISSUER || "http://localhost:8180/realms/digit-sandbox",
-  keycloakJwksUri: process.env.KEYCLOAK_JWKS_URI || "http://localhost:8180/realms/digit-sandbox/protocol/openid-connect/certs",
+  keycloakIssuer: process.env.KEYCLOAK_ISSUER || "http://localhost:8180/auth/realms/digit-sandbox",
+  keycloakJwksUri: process.env.KEYCLOAK_JWKS_URI || "http://localhost:8180/auth/realms/digit-sandbox/protocol/openid-connect/certs",
 
   // Redis
   redisHost: process.env.REDIS_HOST || "localhost",
@@ -23,7 +23,7 @@ export const config = {
   upstreamServices: process.env.UPSTREAM_SERVICES || "",
 
   // Keycloak Admin API (for user registration)
-  keycloakAdminUrl: process.env.KEYCLOAK_ADMIN_URL || "http://localhost:8180",
+  keycloakAdminUrl: process.env.KEYCLOAK_ADMIN_URL || "http://localhost:8180/auth",
   keycloakAdminRealm: process.env.KEYCLOAK_ADMIN_REALM || "digit-sandbox",
   keycloakAdminClientId: process.env.KEYCLOAK_ADMIN_CLIENT_ID || "admin-cli",
   keycloakAdminUsername: process.env.KEYCLOAK_ADMIN_USERNAME || "admin",
