@@ -57,6 +57,7 @@ export async function validateJwt(
       email_verified: payload.email_verified as boolean | undefined,
       phone_number: (payload.phone_number as string) || undefined,
       realm_access: (payload.realm_access as { roles: string[] }) || undefined,
+      groups: (payload.groups as string[]) || undefined,
     };
   } catch {
     return null;
