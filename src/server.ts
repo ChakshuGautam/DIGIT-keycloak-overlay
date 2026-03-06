@@ -10,6 +10,7 @@ import {
 import { resolveUser } from "./user-resolver.js";
 import { initRoutes } from "./routes.js";
 import { proxyRequest } from "./proxy.js";
+import { initKcAdmin, stopKcAdminRefresh, syncTenantRealms } from "./kc-admin.js";
 
 export async function createApp() {
   const app = express();
@@ -63,6 +64,15 @@ if (isMain) {
     await initSystemToken();
     startTokenRefresh();
 
+    if (config.tenantSyncEnabled) {
+      try {
+        await initKcAdmin();
+        await syncTenantRealms();
+      } catch (err) {
+        console.warn("KC Admin init failed (non-fatal):", (err as Error).message);
+      }
+    }
+
     const app = await createApp();
     app.listen(config.port, () => {
       console.log(`token-exchange-svc listening on :${config.port}`);
@@ -70,6 +80,7 @@ if (isMain) {
 
     process.on("SIGTERM", async () => {
       stopTokenRefresh();
+      stopKcAdminRefresh();
       await closeCache();
       process.exit(0);
     });
