@@ -1,0 +1,23 @@
+export const config = {
+  port: parseInt(process.env.PORT || "3000"),
+
+  // DIGIT egov-user
+  digitUserHost: process.env.DIGIT_USER_HOST || "http://localhost:8107",
+  digitSystemUsername: process.env.DIGIT_SYSTEM_USERNAME || "INTERNAL_MICROSERVICE_ROLE",
+  digitSystemPassword: process.env.DIGIT_SYSTEM_PASSWORD || "eGov@123",
+  digitSystemTenant: process.env.DIGIT_SYSTEM_TENANT || "pg",
+  digitDefaultTenant: process.env.DIGIT_DEFAULT_TENANT || "pg.citya",
+
+  // Keycloak
+  keycloakIssuer: process.env.KEYCLOAK_ISSUER || "http://localhost:8180/realms/digit-sandbox",
+  keycloakJwksUri: process.env.KEYCLOAK_JWKS_URI || "http://localhost:8180/realms/digit-sandbox/protocol/openid-connect/certs",
+
+  // Redis
+  redisHost: process.env.REDIS_HOST || "localhost",
+  redisPort: parseInt(process.env.REDIS_PORT || "6379"),
+  cachePrefix: process.env.CACHE_PREFIX || "keycloak",
+  cacheTtlSeconds: parseInt(process.env.CACHE_TTL_SECONDS || "604800"),
+
+  // Upstream routing
+  upstreamServices: process.env.UPSTREAM_SERVICES || "",
+};
