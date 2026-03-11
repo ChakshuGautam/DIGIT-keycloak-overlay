@@ -48,7 +48,7 @@ describe("E2E: cache behavior", () => {
     );
   });
 
-  it("uses pre-populated cache entry", async () => {
+  it("uses pre-populated cache entry with valid token", async () => {
     await setCached("pre-cached", "pg.citya", {
       user: {
         uuid: "pre-uuid",
@@ -61,6 +61,8 @@ describe("E2E: cache behavior", () => {
         roles: [{ code: "CITIZEN", name: "Citizen" }],
       },
       cachedAt: Date.now(),
+      token: "pre-cached-citizen-token",
+      tokenExpiry: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7 days
     });
 
     const token = await signJwt({
@@ -81,5 +83,7 @@ describe("E2E: cache behavior", () => {
     );
     const body = (await resp.json()) as any;
     expect(body.receivedRequestInfo.userInfo.uuid).toBe("pre-uuid");
+    // Uses the pre-cached citizen token
+    expect(body.receivedRequestInfo.authToken).toBe("pre-cached-citizen-token");
   });
 });

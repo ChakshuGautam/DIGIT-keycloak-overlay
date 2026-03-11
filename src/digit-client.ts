@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 
 // Generate a password that meets DIGIT's policy:
 // 8-15 chars, at least one uppercase, lowercase, digit, special (@#$%)
-function generatePassword(seed: string): string {
+export function generatePassword(seed: string): string {
   const hash = createHash("sha256").update(seed).digest("hex").slice(0, 6);
   return `Kc${hash}@1`;  // 10 chars: uppercase K, lowercase c, 6 hex chars, @, digit
 }
@@ -58,6 +58,32 @@ export function startTokenRefresh(intervalMs = 6 * 24 * 60 * 60 * 1000) {
 
 export function stopTokenRefresh() {
   if (systemTokenRefreshTimer) clearInterval(systemTokenRefreshTimer);
+}
+
+export async function getUserToken(
+  userName: string,
+  password: string,
+  tenantId: string,
+): Promise<{ token: string; expiresIn: number }> {
+  const params = new URLSearchParams({
+    username: userName,
+    password,
+    tenantId: rootTenant(tenantId),
+    userType: "CITIZEN",
+    grant_type: "password",
+    scope: "read",
+  });
+  const resp = await fetch(digitUrl("/user/oauth/token"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Authorization: "Basic ZWdvdi11c2VyLWNsaWVudDo=",
+    },
+    body: params.toString(),
+  });
+  if (!resp.ok) throw new Error(`Citizen login failed: ${resp.status}`);
+  const data = (await resp.json()) as DigitLoginResponse;
+  return { token: data.access_token, expiresIn: data.expires_in * 1000 };
 }
 
 export async function searchUser(

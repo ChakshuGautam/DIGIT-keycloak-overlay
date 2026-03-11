@@ -20,12 +20,15 @@ export async function startTestApp() {
   (config as any).redisHost = process.env.REDIS_HOST || "localhost";
   (config as any).redisPort = parseInt(process.env.REDIS_PORT || "16379");
 
+  // Point gateway at mock backend (used for both KC-proxied and non-KC forwarded requests)
+  const pgrPort = process.env.MOCK_PGR_PORT || "18082";
+  (config as any).digitGatewayHost = `http://localhost:${pgrPort}`;
+
   initJwks(process.env.KEYCLOAK_JWKS_URI);
   initCache(`redis://${config.redisHost}:${config.redisPort}`);
   initRoutes();
 
-  // Override routes to point to local mock backends (ports from globalSetup)
-  const pgrPort = process.env.MOCK_PGR_PORT || "18082";
+  // Keep route map entries for backwards compat (not used by proxy anymore, but routes.ts is still loaded)
   const wfPort = process.env.MOCK_WF_PORT || "18109";
   getRouteMap().set("/pgr-services", `http://localhost:${pgrPort}`);
   getRouteMap().set("/egov-workflow-v2", `http://localhost:${wfPort}`);

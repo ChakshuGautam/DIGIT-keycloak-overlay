@@ -1,12 +1,22 @@
 import express from "express";
 import crypto from "node:crypto";
 
+interface MockUser {
+  id: string;
+  username: string;
+  email: string;
+  firstName?: string;
+  enabled: boolean;
+  emailVerified: boolean;
+}
+
 interface RealmState {
   name: string;
   roles: Array<{ id: string; name: string; description?: string }>;
   groups: Map<string, { id: string; name: string; path: string }>;
   userGroups: Map<string, string[]>; // userId -> groupId[]
   userRoles: Map<string, Array<{ id: string; name: string }>>; // userId -> roles[]
+  users: MockUser[];
 }
 
 let realms: Map<string, RealmState>;
@@ -21,6 +31,22 @@ export function resetState() {
 
 function getRealm(name: string): RealmState | undefined {
   return realms.get(name);
+}
+
+function getOrCreateRealm(name: string): RealmState {
+  let realm = realms.get(name);
+  if (!realm) {
+    realm = {
+      name,
+      roles: [],
+      groups: new Map(),
+      userGroups: new Map(),
+      userRoles: new Map(),
+      users: [],
+    };
+    realms.set(name, realm);
+  }
+  return realm;
 }
 
 export function createKcAdminMock() {
@@ -80,6 +106,7 @@ export function createKcAdminMock() {
       groups,
       userGroups: new Map(),
       userRoles: new Map(),
+      users: [],
     });
 
     res.status(201).json({});
@@ -132,6 +159,40 @@ export function createKcAdminMock() {
       return res.status(404).json({ error: "Realm not found" });
     }
     res.json(Array.from(realm.groups.values()));
+  });
+
+  // GET /admin/realms/:realm/users — search users (supports ?email=...&exact=true)
+  app.get("/admin/realms/:realm/users", (req, res) => {
+    const realm = getOrCreateRealm(req.params.realm);
+    const emailFilter = req.query.email as string | undefined;
+    if (emailFilter) {
+      const matches = realm.users.filter((u) => u.email === emailFilter);
+      return res.json(matches);
+    }
+    res.json(realm.users);
+  });
+
+  // POST /admin/realms/:realm/users — create user
+  app.post("/admin/realms/:realm/users", (req, res) => {
+    const realm = getOrCreateRealm(req.params.realm);
+    const { username, email, firstName, enabled, emailVerified } = req.body;
+    // Check for duplicate by email or username
+    const exists = realm.users.some(
+      (u) => u.email === email || u.username === username,
+    );
+    if (exists) {
+      return res.status(409).json({ errorMessage: "User exists with same username" });
+    }
+    const user: MockUser = {
+      id: crypto.randomUUID(),
+      username: username || email,
+      email,
+      firstName,
+      enabled: enabled ?? true,
+      emailVerified: emailVerified ?? false,
+    };
+    realm.users.push(user);
+    res.status(201).set("Location", `/admin/realms/${req.params.realm}/users/${user.id}`).end();
   });
 
   // PUT /admin/realms/:realm/users/:userId/groups/:groupId — add user to group

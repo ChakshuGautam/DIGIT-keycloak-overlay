@@ -11,7 +11,7 @@ afterAll(async () => {
 });
 
 describe("E2E: error handling", () => {
-  it("returns 401 for garbage token", async () => {
+  it("forwards garbage token to gateway (non-KC passthrough)", async () => {
     const resp = await fetch(
       `http://localhost:${getAppPort()}/pgr-services/v2/_search`,
       {
@@ -23,10 +23,13 @@ describe("E2E: error handling", () => {
         body: JSON.stringify({ RequestInfo: {} }),
       },
     );
-    expect(resp.status).toBe(401);
+    // Garbage tokens are not valid KC JWTs, so request is forwarded to gateway
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as any;
+    expect(body.echo).toBe(true);
   });
 
-  it("returns 404 for unknown upstream path", async () => {
+  it("forwards unknown path to gateway (gateway handles routing)", async () => {
     const token = await signJwt({
       sub: "err-user",
       email: "err@test.com",
@@ -43,6 +46,10 @@ describe("E2E: error handling", () => {
         body: JSON.stringify({ RequestInfo: {}, tenantId: "pg.citya" }),
       },
     );
-    expect(resp.status).toBe(404);
+    // All paths are forwarded to gateway — gateway handles service routing
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as any;
+    expect(body.echo).toBe(true);
+    expect(body.path).toBe("/unknown-service/foo");
   });
 });

@@ -26,6 +26,8 @@ export interface DigitUser {
 export interface CachedSession {
   user: DigitUser;
   cachedAt: number;
+  token?: string;
+  tokenExpiry?: number;
 }
 
 export interface DigitLoginResponse {

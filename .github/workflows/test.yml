@@ -12,6 +12,28 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      keycloak:
+        image: quay.io/keycloak/keycloak:24.0
+        env:
+          KC_HOSTNAME_STRICT: "false"
+          KC_HTTP_ENABLED: "true"
+          KEYCLOAK_ADMIN: admin
+          KEYCLOAK_ADMIN_PASSWORD: admin
+        ports:
+          - 8180:8080
+        options: >-
+          --health-cmd "bash -c 'exec 3<>/dev/tcp/localhost/8080 && echo -e \"GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n\" >&3 && timeout 5 cat <&3 | grep -q UP'"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 15
+          --health-start-period 30s
+    env:
+      LIVE_KC_URL: http://localhost:8180
+      KEYCLOAK_ADMIN_USERNAME: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      DIGIT_TENANTS: "pg:pg.citya,pg.cityb;mz:mz.chimoio"
+      REDIS_HOST: localhost
+      REDIS_PORT: 16379
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,7 +41,22 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm test
-        env:
-          REDIS_HOST: localhost
-          REDIS_PORT: 16379
+
+      - name: Unit + E2E tests
+        run: npm test
+
+      - name: Setup KC realms
+        run: npx tsx scripts/ci-setup-kc.ts
+
+      - name: Integration tests
+        run: npm run test:integration
+
+      - name: Newman E2E
+        run: npm run test:newman
+
+      - name: Upload Newman results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: newman-results
+          path: newman-results.xml

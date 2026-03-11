@@ -8,6 +8,7 @@ export default defineConfig({
     globalSetup: "./tests/setup.ts",
     setupFiles: ["./tests/worker-setup.ts"],
     include: ["tests/**/*.test.ts"],
+    exclude: ["tests/integration/**"],
     pool: "forks",
     fileParallelism: false,
     sequence: {

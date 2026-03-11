@@ -1,6 +1,6 @@
 import type { KCClaims, DigitUser, CachedSession } from "./types.js";
 import { getCached, setCached } from "./cache.js";
-import { searchUser, createUser, updateUser, updateUserRoles } from "./digit-client.js";
+import { searchUser, createUser, updateUser, updateUserRoles, getUserToken, generatePassword } from "./digit-client.js";
 import { config } from "./config.js";
 import { syncUserToKc } from "./kc-sync.js";
 
@@ -23,7 +23,7 @@ function extractDigitRoles(claims: KCClaims): Array<{ code: string; name: string
 export async function resolveUser(
   claims: KCClaims,
   tenantId: string,
-): Promise<DigitUser> {
+): Promise<{ user: DigitUser; token: string }> {
   const effectiveTenant = tenantId || config.digitDefaultTenant;
 
   // 1. Check cache
@@ -68,7 +68,19 @@ export async function resolveUser(
       );
     }
 
-    return cached.user;
+    // Check if citizen token is still valid
+    if (cached.token && cached.tokenExpiry && cached.tokenExpiry > Date.now()) {
+      return { user: cached.user, token: cached.token };
+    }
+
+    // Token expired or missing — acquire fresh citizen token
+    const { token, expiresIn } = await getUserToken(
+      cached.user.userName, generatePassword(claims.sub), effectiveTenant,
+    );
+    cached.token = token;
+    cached.tokenExpiry = Date.now() + expiresIn;
+    await setCached(claims.sub, effectiveTenant, cached);
+    return { user: cached.user, token };
   }
 
   // 2. Search for existing DIGIT user by email
@@ -87,8 +99,18 @@ export async function resolveUser(
     });
   }
 
-  // 4. Cache
-  const session: CachedSession = { user: digitUser, cachedAt: Date.now() };
+  // 4. Acquire citizen token
+  const { token, expiresIn } = await getUserToken(
+    digitUser.userName, generatePassword(claims.sub), effectiveTenant,
+  );
+
+  // 5. Cache with token
+  const session: CachedSession = {
+    user: digitUser,
+    cachedAt: Date.now(),
+    token,
+    tokenExpiry: Date.now() + expiresIn,
+  };
   await setCached(claims.sub, effectiveTenant, session);
 
   // Fire-and-forget KC sync for newly resolved user
@@ -98,5 +120,5 @@ export async function resolveUser(
     );
   }
 
-  return digitUser;
+  return { user: digitUser, token };
 }

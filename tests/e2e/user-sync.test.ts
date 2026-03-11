@@ -17,7 +17,7 @@ beforeEach(async () => {
 
 describe("E2E: user sync", () => {
   it("updates cached name when Keycloak name changes", async () => {
-    // Pre-populate cache with old name
+    // Pre-populate cache with old name and valid token
     await setCached("sync-user", "pg.citya", {
       user: {
         uuid: "sync-uuid",
@@ -30,6 +30,8 @@ describe("E2E: user sync", () => {
         roles: [{ code: "CITIZEN", name: "Citizen" }],
       },
       cachedAt: Date.now(),
+      token: "sync-citizen-token",
+      tokenExpiry: Date.now() + 7 * 24 * 60 * 60 * 1000,
     });
 
     // Request with new name in JWT

@@ -9,7 +9,7 @@ import {
 } from "./digit-client.js";
 import { resolveUser } from "./user-resolver.js";
 import { initRoutes } from "./routes.js";
-import { proxyRequest } from "./proxy.js";
+import { proxyRequest, forwardToGateway } from "./proxy.js";
 import { searchKeycloakUser, createKeycloakUser } from "./keycloak-admin.js";
 import { initKcAdmin, stopKcAdminRefresh, syncTenantRealms } from "./kc-admin.js";
 
@@ -71,21 +71,22 @@ export async function createApp() {
 
   // Main proxy handler
   app.all("*", async (req, res) => {
-    const claims = await validateJwt(req.headers.authorization);
+    const claims = await validateJwt(req.headers.authorization).catch(() => null);
+
     if (!claims) {
-      return res
-        .status(401)
-        .json({ error: "Unauthorized", message: "Invalid or missing Keycloak JWT" });
+      // No KC JWT — forward to gateway unchanged (DIGIT token / no auth)
+      return forwardToGateway(req, res, config.digitGatewayHost);
     }
 
+    // KC JWT — resolve user, get citizen token, proxy via gateway
     const tenantId =
       req.body?.RequestInfo?.userInfo?.tenantId ||
       req.body?.tenantId ||
       config.digitDefaultTenant;
 
     try {
-      const digitUser = await resolveUser(claims, tenantId);
-      await proxyRequest(req, res, digitUser);
+      const { user, token } = await resolveUser(claims, tenantId);
+      await proxyRequest(req, res, user, token, config.digitGatewayHost);
     } catch (err) {
       console.error("User resolution error:", err);
       res

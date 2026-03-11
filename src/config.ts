@@ -9,6 +9,9 @@ export const config = {
   digitSystemTenant: process.env.DIGIT_SYSTEM_TENANT || "pg",
   digitDefaultTenant: process.env.DIGIT_DEFAULT_TENANT || "pg.citya",
 
+  // DIGIT gateway
+  digitGatewayHost: process.env.DIGIT_GATEWAY_HOST || "http://gateway:8080",
+
   // Keycloak
   keycloakIssuer: process.env.KEYCLOAK_ISSUER || "http://localhost:8180/auth/realms/digit-sandbox",
   keycloakJwksUri: process.env.KEYCLOAK_JWKS_URI || "http://localhost:8180/auth/realms/digit-sandbox/protocol/openid-connect/certs",

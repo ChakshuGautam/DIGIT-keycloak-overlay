@@ -8,7 +8,9 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:newman": "newman run tests/postman/kc-e2e.postman_collection.json --env-var keycloakUrl=$LIVE_KC_URL --env-var adminUsername=admin --env-var adminPassword=admin --env-var testRealm=pg --env-var testCity=pg.citya --folder '1. KC Admin & Realm Setup' --folder '2. User Provisioning in KC' --folder '3. OIDC Token Acquisition' --folder '5. Cross-Realm Validation' --folder '6. Cleanup' --reporters cli,junit --reporter-junit-export newman-results.xml"
   },
   "dependencies": {
     "@opentelemetry/auto-instrumentations-node": "^0.71.0",
@@ -23,6 +25,7 @@
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
+    "newman": "^6.2.1",
     "vitest": "^2.1.0"
   }
 }

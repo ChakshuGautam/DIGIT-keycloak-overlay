@@ -1,34 +1,27 @@
 import type { Request, Response } from "express";
-import { resolveUpstream } from "./routes.js";
-import { getSystemToken } from "./digit-client.js";
 import type { DigitUser } from "./types.js";
 
 export async function proxyRequest(
   req: Request,
   res: Response,
   digitUser: DigitUser,
+  citizenToken: string,
+  gatewayUrl: string,
 ): Promise<void> {
-  const upstream = resolveUpstream(req.path);
-  if (!upstream) {
-    res.status(404).json({ error: "No upstream service for path", path: req.path });
-    return;
-  }
-
   // Preserve query string from original request
   const queryString = req.originalUrl.includes("?")
     ? req.originalUrl.slice(req.originalUrl.indexOf("?"))
     : "";
-  const upstreamUrl = `${upstream}${queryString}`;
+  const upstreamUrl = `${gatewayUrl}${req.path}${queryString}`;
 
   const contentType = req.headers["content-type"] || "";
-  const systemToken = getSystemToken();
 
   try {
     if (contentType.includes("application/json")) {
       // JSON: rewrite RequestInfo in body
       const body = req.body || {};
       body.RequestInfo = body.RequestInfo || {};
-      body.RequestInfo.authToken = systemToken;
+      body.RequestInfo.authToken = citizenToken;
       body.RequestInfo.userInfo = digitUser;
 
       const upstreamResp = await fetch(upstreamUrl, {
@@ -45,7 +38,7 @@ export async function proxyRequest(
     } else if (contentType.includes("multipart/form-data")) {
       // Multipart: stream body, pass token via query param
       const url = new URL(upstreamUrl);
-      url.searchParams.set("auth-token", systemToken);
+      url.searchParams.set("auth-token", citizenToken);
 
       const upstreamResp = await fetch(url.toString(), {
         method: req.method,
@@ -73,7 +66,7 @@ export async function proxyRequest(
               ([k]) => !["host", "connection"].includes(k),
             ),
           ) as Record<string, string>,
-          Authorization: `Bearer ${systemToken}`,
+          Authorization: `Bearer ${citizenToken}`,
         },
         body: ["GET", "HEAD"].includes(req.method)
           ? undefined
@@ -90,6 +83,57 @@ export async function proxyRequest(
     }
   } catch (err) {
     console.error("Proxy error:", err);
+    res.status(502).json({ error: "Bad gateway", details: String(err) });
+  }
+}
+
+/**
+ * Forward a request to the DIGIT gateway unchanged (no token rewriting).
+ * Used for requests without a Keycloak JWT (existing DIGIT auth).
+ */
+export async function forwardToGateway(
+  req: Request,
+  res: Response,
+  gatewayUrl: string,
+): Promise<void> {
+  const queryString = req.originalUrl.includes("?")
+    ? req.originalUrl.slice(req.originalUrl.indexOf("?"))
+    : "";
+  const upstreamUrl = `${gatewayUrl}${req.path}${queryString}`;
+
+  try {
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (!["host", "connection"].includes(k) && typeof v === "string") {
+        headers[k] = v;
+      }
+    }
+
+    // Express json() middleware already consumed the body stream.
+    // Re-serialize if body was parsed; otherwise use undefined for bodyless methods.
+    const contentType = req.headers["content-type"] || "";
+    let body: string | undefined;
+    if (!["GET", "HEAD"].includes(req.method)) {
+      if (contentType.includes("application/json") && req.body) {
+        body = JSON.stringify(req.body);
+      }
+      // For non-JSON bodies (multipart, form-urlencoded), express.json() doesn't
+      // consume the stream, but in practice non-KC requests are typically JSON.
+    }
+
+    const upstreamResp = await fetch(upstreamUrl, {
+      method: req.method,
+      headers,
+      body,
+    });
+
+    res.status(upstreamResp.status);
+    const ct = upstreamResp.headers.get("content-type");
+    if (ct) res.setHeader("Content-Type", ct);
+    const responseBody = await upstreamResp.text();
+    res.send(responseBody);
+  } catch (err) {
+    console.error("Gateway forward error:", err);
     res.status(502).json({ error: "Bad gateway", details: String(err) });
   }
 }
