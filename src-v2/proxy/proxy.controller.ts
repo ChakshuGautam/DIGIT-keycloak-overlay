@@ -7,11 +7,11 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { ProxyService } from "./proxy.service";
 import { JwtService } from "../auth/jwt.service";
 import { UserResolverService } from "../user/user-resolver.service";
 import { CacheService } from "../cache/cache.service";
 import { MetricsService } from "../metrics/metrics.service";
+import type { DigitUser } from "../types";
 
 @Controller()
 export class ProxyController {
@@ -20,25 +20,19 @@ export class ProxyController {
   private readonly defaultTenant: string;
 
   constructor(
-    private readonly proxy: ProxyService,
     private readonly jwt: JwtService,
     private readonly userResolver: UserResolverService,
     private readonly cache: CacheService,
     private readonly metrics: MetricsService,
     private readonly config: ConfigService,
   ) {
-    this.gatewayUrl =
-      this.config.get<string>("KONG_GATEWAY_URL") ?? "http://kong-gateway:8000";
-    this.defaultTenant =
-      this.config.get<string>("DIGIT_DEFAULT_TENANT") ?? "pg.citya";
+    this.gatewayUrl = this.config.get<string>("DIGIT_GATEWAY_HOST") ?? "http://kong-gateway:8000";
+    this.defaultTenant = this.config.get<string>("DIGIT_DEFAULT_TENANT") ?? "pg.citya";
   }
 
   @All("*")
-  async handleAll(
-    @Req() req: FastifyRequest,
-    @Res() res: FastifyReply,
-  ): Promise<void> {
-    // CORS headers
+  async handleAll(@Req() req: FastifyRequest, @Res() res: FastifyReply): Promise<void> {
+    // CORS
     const origin = req.headers["origin"] as string;
     const allowedOrigins = this.config.get<string>("CORS_ALLOWED_ORIGINS");
     if (!allowedOrigins || (origin && allowedOrigins.split(",").map(s => s.trim()).includes(origin))) {
@@ -55,109 +49,166 @@ export class ProxyController {
       return;
     }
 
-    const path = req.url.split("?")[0];
     const method = req.method;
-    const contentType = (req.headers["content-type"] as string) || "";
-    const authHeader = req.headers["authorization"] as string | undefined;
-
-    // Try to extract JWT from Authorization header, then fallback to RequestInfo.authToken
-    let jwtToken = authHeader;
+    const path = req.url; // includes query string
     const body = (req.body as any) || {};
 
+    // Try Authorization header, then RequestInfo.authToken
+    let jwtToken = req.headers["authorization"] as string | undefined;
     if (!jwtToken && body.RequestInfo?.authToken) {
       jwtToken = `Bearer ${body.RequestInfo.authToken}`;
     }
 
-    // Validate JWT
-    const claims = await this.jwt.validate(jwtToken);
+    const claims = await this.jwt.validate(jwtToken).catch(() => null);
 
     if (!claims) {
-      // If Authorization header was present but invalid, clear cache best-effort
-      if (authHeader) {
-        const sub = this.jwt.extractSubFromToken(authHeader);
-        if (sub) {
-          this.cache.deleteAllForSub(sub).catch(() => {});
-        }
-      }
-
-      this.metrics.jwtValidationTotal.inc({ result: "invalid" });
-
-      // Forward unchanged to upstream or gateway
-      const upstreamUrl =
-        this.proxy.resolveUpstreamUrl(path) ?? `${this.gatewayUrl}${path}`;
-      await this.forwardAndRespond(method, upstreamUrl, req, res, body);
+      // No KC JWT — forward to gateway unchanged (like v1's forwardToGateway)
+      this.metrics.jwtValidationTotal.inc({ result: "missing" });
+      await this.forwardToGateway(req, res);
       return;
     }
 
-    this.metrics.jwtValidationTotal.inc({ result: "valid" });
+    this.metrics.jwtValidationTotal.inc({ result: "success" });
 
-    // Determine tenantId
+    // Determine tenantId (same priority as v1)
     const tenantId =
       body.RequestInfo?.userInfo?.tenantId ||
       body.tenantId ||
       this.defaultTenant;
 
     try {
-      // Resolve DIGIT user
       const { user, token } = await this.userResolver.resolve(claims, tenantId);
-
-      // Determine upstream URL
-      const upstreamUrl =
-        this.proxy.resolveUpstreamUrl(path) ?? `${this.gatewayUrl}${path}`;
-
-      const isJson = contentType.includes("application/json");
-      const isMultipart = contentType.includes("multipart/");
-
-      if (isJson) {
-        // Rewrite RequestInfo in JSON body
-        const rewrittenBody = this.proxy.rewriteRequestInfo(body, user, token);
-        await this.forwardAndRespond(
-          method,
-          upstreamUrl,
-          req,
-          res,
-          rewrittenBody,
-        );
-      } else if (isMultipart) {
-        // Append auth query param for multipart
-        const authedUrl = this.proxy.appendAuthParam(upstreamUrl, token);
-        await this.forwardAndRespond(method, authedUrl, req, res, body);
-      } else {
-        // Other content types: forward with auth header
-        const headers = this.buildHeaders(req);
-        headers["authorization"] = `Bearer ${token}`;
-        const result = await this.proxy.forward(method, upstreamUrl, headers, body);
-        res.status(result.status).headers(result.headers).send(result.body);
-      }
+      // Proxy to gateway with rewritten RequestInfo (matching v1 exactly)
+      await this.proxyRequest(req, res, user, token);
     } catch (err) {
       this.logger.error(`Proxy error: ${(err as Error).message}`);
-      res.status(502).send({ error: "Bad Gateway", message: (err as Error).message });
+      res.status(500).send({ error: "Internal error", message: "Failed to resolve user" });
     }
   }
 
-  private async forwardAndRespond(
-    method: string,
-    upstreamUrl: string,
+  /**
+   * Proxy with KC user — matches v1's proxyRequest() exactly.
+   * Routes through Kong gateway (not direct to upstream).
+   * Rewrites RequestInfo.authToken + userInfo.
+   */
+  private async proxyRequest(
     req: FastifyRequest,
     res: FastifyReply,
-    body: any,
+    digitUser: DigitUser,
+    citizenToken: string,
   ): Promise<void> {
-    const headers = this.buildHeaders(req);
-    const result = await this.proxy.forward(method, upstreamUrl, headers, body);
-    res.status(result.status).headers(result.headers).send(result.body);
+    const upstreamUrl = `${this.gatewayUrl}${req.url}`;
+    const contentType = (req.headers["content-type"] as string) || "";
+
+    try {
+      if (contentType.includes("application/json")) {
+        // JSON: rewrite RequestInfo in body (v1 behavior: userInfo = full digitUser object)
+        const body = (req.body as any) || {};
+        body.RequestInfo = body.RequestInfo || {};
+        body.RequestInfo.authToken = citizenToken;
+        body.RequestInfo.userInfo = digitUser;
+
+        const upstreamResp = await fetch(upstreamUrl, {
+          method: req.method,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+
+        res.status(upstreamResp.status);
+        const ct = upstreamResp.headers.get("content-type");
+        if (ct) res.header("Content-Type", ct);
+        res.send(await upstreamResp.text());
+      } else if (contentType.includes("multipart/form-data")) {
+        // Multipart: pass token via query param
+        const url = new URL(upstreamUrl);
+        url.searchParams.set("auth-token", citizenToken);
+
+        const upstreamResp = await fetch(url.toString(), {
+          method: req.method,
+          headers: {
+            "Content-Type": contentType,
+          },
+          body: req.raw as any,
+          // @ts-expect-error duplex is valid
+          duplex: "half",
+        });
+
+        res.status(upstreamResp.status);
+        const ct = upstreamResp.headers.get("content-type");
+        if (ct) res.header("Content-Type", ct);
+        res.send(await upstreamResp.text());
+      } else {
+        // Unknown content type: pass-through with auth header
+        const headers: Record<string, string> = {};
+        for (const [k, v] of Object.entries(req.headers)) {
+          if (typeof v === "string" && !["host", "connection"].includes(k)) {
+            headers[k] = v;
+          }
+        }
+        headers["Authorization"] = `Bearer ${citizenToken}`;
+
+        const upstreamResp = await fetch(upstreamUrl, {
+          method: req.method,
+          headers,
+          body: ["GET", "HEAD"].includes(req.method) ? undefined : (req.raw as any),
+          // @ts-expect-error duplex is valid
+          duplex: "half",
+        });
+
+        res.status(upstreamResp.status);
+        const ct = upstreamResp.headers.get("content-type");
+        if (ct) res.header("Content-Type", ct);
+        res.send(await upstreamResp.text());
+      }
+    } catch (err) {
+      this.logger.error(`Upstream error: ${(err as Error).message}`);
+      res.status(502).send({ error: "Bad gateway", details: String(err) });
+    }
   }
 
-  private buildHeaders(req: FastifyRequest): Record<string, string> {
-    const headers: Record<string, string> = {};
-    for (const [key, value] of Object.entries(req.headers)) {
-      if (typeof value === "string") {
-        headers[key] = value;
-      } else if (Array.isArray(value)) {
-        headers[key] = value.join(", ");
+  /**
+   * Forward unchanged to gateway — matches v1's forwardToGateway() exactly.
+   */
+  private async forwardToGateway(req: FastifyRequest, res: FastifyReply): Promise<void> {
+    // KC OIDC endpoints should go to Keycloak, not Kong
+    const kcUrl = this.config.get<string>("KEYCLOAK_INTERNAL_URL") || "http://keycloak:8080";
+    const isKcPath = req.url.startsWith("/realms/");
+    const upstreamUrl = isKcPath
+      ? `${kcUrl}${req.url}`
+      : `${this.gatewayUrl}${req.url}`;
+
+    try {
+      const headers: Record<string, string> = {};
+      for (const [k, v] of Object.entries(req.headers)) {
+        if (typeof v === "string" && !["host", "connection"].includes(k)) {
+          headers[k] = v;
+        }
       }
+
+      const contentType = (req.headers["content-type"] as string) || "";
+      let body: string | undefined;
+      if (!["GET", "HEAD"].includes(req.method)) {
+        if (contentType.includes("application/json") && req.body) {
+          body = JSON.stringify(req.body);
+        } else if (contentType.includes("x-www-form-urlencoded") && req.body) {
+          // Fastify parses form data into object — re-serialize as URLSearchParams
+          body = new URLSearchParams(req.body as any).toString();
+        }
+      }
+
+      const upstreamResp = await fetch(upstreamUrl, {
+        method: req.method,
+        headers,
+        body,
+      });
+
+      res.status(upstreamResp.status);
+      const ct = upstreamResp.headers.get("content-type");
+      if (ct) res.header("Content-Type", ct);
+      res.send(await upstreamResp.text());
+    } catch (err) {
+      this.logger.error(`Gateway error: ${(err as Error).message}`);
+      res.status(502).send({ error: "Bad gateway", details: String(err) });
     }
-    // Remove host header to avoid upstream confusion
-    delete headers["host"];
-    return headers;
   }
 }

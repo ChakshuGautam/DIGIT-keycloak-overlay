@@ -40,6 +40,10 @@ export class ProxyService {
     headers: Record<string, string>,
     body?: any,
   ): Promise<{ status: number; headers: Record<string, string>; body: any }> {
+    const serialized = body ? (typeof body === "string" ? body : JSON.stringify(body)) : undefined;
+    if (serialized && upstreamUrl.includes("pgr-services")) {
+      console.log(`[PROXY-DEBUG] Sending to ${upstreamUrl}:\n${serialized.substring(0, 500)}`);
+    }
     const resp = await fetch(upstreamUrl, {
       method,
       headers,

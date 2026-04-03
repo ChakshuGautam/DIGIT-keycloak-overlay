@@ -12,6 +12,8 @@ async function bootstrap() {
 
   app.enableShutdownHooks();
 
+  // NestJS Fastify adapter auto-registers JSON + URL-encoded parsers
+
   // CORS handled via middleware in proxy controller to avoid
   // Fastify route conflict with @All("*") wildcard handler
   const config = app.get(ConfigService);

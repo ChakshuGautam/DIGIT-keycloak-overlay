@@ -8,8 +8,10 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "declaration": true
+    "declaration": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true
   },
-  "include": ["src"],
+  "include": ["src", "src-v2"],
   "exclude": ["node_modules", "dist", "tests", "mocks"]
 }

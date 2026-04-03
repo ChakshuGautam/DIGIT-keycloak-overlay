@@ -64,18 +64,23 @@ export class UserResolverService {
       user = { ...user, name: claims.name };
     }
 
-    // Sync roles
+    // Sync roles — only update if JWT has meaningful DIGIT roles
+    let rolesChanged = false;
     const jwtRoles = this.extractDigitRoles(claims);
-    const cachedRoleCodes = new Set(user.roles.map((r) => r.code));
-    const jwtRoleCodes = new Set(jwtRoles.map((r) => r.code));
-    const rolesChanged =
-      cachedRoleCodes.size !== jwtRoleCodes.size ||
-      [...jwtRoleCodes].some((code) => !cachedRoleCodes.has(code));
+    if (jwtRoles.length > 0) {
+      const cachedRoleCodes = new Set(user.roles?.map((r) => r.code) || []);
+      const jwtRoleCodes = new Set(jwtRoles.map((r) => r.code));
+      jwtRoleCodes.add("CITIZEN");
+      rolesChanged =
+        cachedRoleCodes.size !== jwtRoleCodes.size ||
+        [...jwtRoleCodes].some((code) => !cachedRoleCodes.has(code));
 
-    if (rolesChanged) {
-      await this.digit.updateUserRoles(user, jwtRoles);
-      user = { ...user, roles: jwtRoles };
-      this.metrics.roleSyncTotal.inc({ direction: "kc_to_digit", result: "success" });
+      if (rolesChanged) {
+        this.digit.updateUserRoles(user.uuid, root, jwtRoles).catch((err) => {
+          this.logger.warn(`Role sync failed (non-fatal): ${(err as Error).message}`);
+        });
+        user = { ...user, roles: jwtRoles };
+      }
     }
 
     // Token refresh
