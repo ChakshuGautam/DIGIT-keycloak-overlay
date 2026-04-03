@@ -1,0 +1,13 @@
+FROM oven/bun:1-alpine
+
+WORKDIR /app
+COPY package.json bun.lockb ./
+RUN bun install --frozen-lockfile --production
+
+COPY src-v2/ src-v2/
+COPY tsconfig.v2.json ./
+
+EXPOSE 3000
+HEALTHCHECK --interval=10s --retries=5 CMD wget -qO- http://127.0.0.1:3000/readyz || exit 1
+
+CMD ["bun", "run", "src-v2/main.ts"]

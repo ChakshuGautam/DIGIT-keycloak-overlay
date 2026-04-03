@@ -1,0 +1,83 @@
+version: "3.8"
+
+services:
+  digit-dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    command: --maxmemory 512mb --proactor_threads 4
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 10s
+      retries: 5
+    networks:
+      - local-setup_egov-network
+
+  token-exchange-svc:
+    build:
+      context: .
+      dockerfile: Dockerfile.v2
+    deploy:
+      replicas: 2
+    environment:
+      PORT: "3000"
+      DIGIT_USER_HOST: http://egov-user:8107
+      DIGIT_SYSTEM_USERNAME: ADMIN
+      DIGIT_SYSTEM_PASSWORD: "eGov@123"
+      DIGIT_SYSTEM_USER_TYPE: EMPLOYEE
+      DIGIT_SYSTEM_TENANT: pg
+      DIGIT_DEFAULT_TENANT: pg.citya
+      DIGIT_GATEWAY_HOST: http://kong-gateway:8000
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      KEYCLOAK_AUDIENCE: digit-sandbox-ui
+      KEYCLOAK_ADMIN_URL: http://keycloak:8080
+      KEYCLOAK_ADMIN_USERNAME: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KEYCLOAK_USER_REALM: digit-sandbox
+      KEYCLOAK_BFF_CLIENT_ID: digit-svc
+      KEYCLOAK_BFF_CLIENT_SECRET: ""
+      REDIS_HOST: digit-dragonfly
+      REDIS_PORT: "6379"
+      CACHE_TTL_SECONDS: "3600"
+      CORS_ALLOWED_ORIGINS: "https://keycloak-sandbox.live.digit.org"
+      TENANT_SYNC_ENABLED: "true"
+      DIGIT_TENANTS: "pg:pg.citya,pg.cityb"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://digit-telemetry:4317
+      OTEL_SERVICE_NAME: token-exchange-svc
+    ports:
+      - "18200:3000"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      digit-dragonfly:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/readyz || exit 1"]
+      interval: 10s
+      retries: 5
+    networks:
+      - local-setup_egov-network
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    command: start-dev --import-realm --health-enabled=true
+    environment:
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    ports:
+      - "18180:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && timeout 5 cat <&3 | grep -q UP"]
+      interval: 10s
+      retries: 15
+    networks:
+      - local-setup_egov-network
+
+networks:
+  local-setup_egov-network:
+    external: true

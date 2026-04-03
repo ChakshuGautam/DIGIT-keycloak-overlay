@@ -61,7 +61,32 @@
         "profile",
         "roles",
         "email"
+      ],
+      "protocolMappers": [
+        {
+          "name": "digit-ui-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "digit-sandbox-ui",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        }
       ]
+    },
+    {
+      "clientId": "digit-svc",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "digit-svc-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "protocol": "openid-connect",
+      "redirectUris": [],
+      "webOrigins": []
     }
   ],
   "scopeMappings": [],
