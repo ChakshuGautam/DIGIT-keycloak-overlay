@@ -47,6 +47,17 @@ export class DigitClientService implements OnModuleInit {
     return `90000${num.toString().padStart(5, "0")}`;
   }
 
+  /** v1-compatible deterministic password (for backward compat with existing users) */
+  generateV1Password(sub: string): string {
+    const hash = createHash("sha256").update(sub).digest("hex").slice(0, 6);
+    return `Kc${hash}@1`;
+  }
+
+  /** System default password for pre-existing DIGIT users */
+  getSystemPassword(): string {
+    return this.config.get<string>("DIGIT_SYSTEM_PASSWORD") || "eGov@123";
+  }
+
   namespacedUserName(realm: string, email: string): string {
     return `${realm}:${email}`;
   }
@@ -138,13 +149,20 @@ export class DigitClientService implements OnModuleInit {
     }
   }
 
-  async updateUserPassword(uuid: string, password: string): Promise<void> {
+  async updateUserPassword(
+    existingUser: DigitUser,
+    password: string,
+  ): Promise<void> {
     const host = this.config.get<string>("DIGIT_USER_HOST");
     const url = `${host}/user/users/_updatenovalidate`;
 
+    // Send full user object with updated password — DIGIT requires all fields
     await this.postToDigit(url, {
-      RequestInfo: { authToken: this.systemToken },
-      user: { uuid, password },
+      RequestInfo: { apiId: "Rainmaker", authToken: this.systemToken },
+      user: {
+        ...existingUser,
+        password,
+      },
     });
   }
 
@@ -157,6 +175,7 @@ export class DigitClientService implements OnModuleInit {
     const url = `${host}/user/users/_updatenovalidate`;
 
     // Always include CITIZEN role
+    if (!roles || !Array.isArray(roles)) roles = [];
     const hasCitizen = roles.some((r) => r.code === "CITIZEN");
     const allRoles = hasCitizen
       ? roles

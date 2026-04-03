@@ -9,8 +9,11 @@ export class JwtService {
   private readonly audience: string;
   private readonly jwksCache = new Map<string, JWTVerifyGetKey>();
 
+  private readonly kcInternalUrl: string;
+
   constructor(private readonly config: ConfigService) {
     this.audience = this.config.get<string>("KEYCLOAK_AUDIENCE") || "digit-ui";
+    this.kcInternalUrl = this.config.get<string>("KEYCLOAK_INTERNAL_URL") || "";
   }
 
   async validate(authHeader: string | undefined): Promise<JwtClaims | null> {
@@ -99,7 +102,11 @@ export class JwtService {
   private getJwks(realm: string, issuer: string): JWTVerifyGetKey {
     let jwks = this.jwksCache.get(realm);
     if (!jwks) {
-      const jwksUri = `${issuer}/protocol/openid-connect/certs`;
+      // Use internal KC URL for JWKS fetch (external issuer URL may not be reachable from inside Docker)
+      const jwksBase = this.kcInternalUrl
+        ? `${this.kcInternalUrl}/realms/${realm}`
+        : issuer;
+      const jwksUri = `${jwksBase}/protocol/openid-connect/certs`;
       jwks = createRemoteJWKSet(new URL(jwksUri));
       this.jwksCache.set(realm, jwks);
     }

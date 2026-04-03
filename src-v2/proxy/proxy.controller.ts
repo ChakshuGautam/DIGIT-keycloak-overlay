@@ -6,7 +6,7 @@ import {
   Logger,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { FastifyRequest, FastifyReply } from "fastify";
+import type { FastifyRequest, FastifyReply } from "fastify";
 import { ProxyService } from "./proxy.service";
 import { JwtService } from "../auth/jwt.service";
 import { UserResolverService } from "../user/user-resolver.service";
@@ -38,6 +38,23 @@ export class ProxyController {
     @Req() req: FastifyRequest,
     @Res() res: FastifyReply,
   ): Promise<void> {
+    // CORS headers
+    const origin = req.headers["origin"] as string;
+    const allowedOrigins = this.config.get<string>("CORS_ALLOWED_ORIGINS");
+    if (!allowedOrigins || (origin && allowedOrigins.split(",").map(s => s.trim()).includes(origin))) {
+      res.header("Access-Control-Allow-Origin", origin || "*");
+    } else if (!allowedOrigins) {
+      res.header("Access-Control-Allow-Origin", "*");
+    }
+    res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, DELETE");
+    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.header("Access-Control-Allow-Credentials", "true");
+
+    if (req.method === "OPTIONS") {
+      res.status(204).send();
+      return;
+    }
+
     const path = req.url.split("?")[0];
     const method = req.method;
     const contentType = (req.headers["content-type"] as string) || "";

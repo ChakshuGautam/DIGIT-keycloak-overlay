@@ -114,15 +114,28 @@ export class UserResolverService {
     root: string,
   ): Promise<{ user: DigitUser; token: string }> {
     const userName = this.digit.namespacedUserName(claims.realm, claims.email);
-    const password = this.digit.generateRandomPassword();
+    let password = this.digit.generateRandomPassword();
     const userType = this.digit.resolveUserType(claims.roles);
     const jwtRoles = this.extractDigitRoles(claims);
 
     let user = await this.digit.searchUser(userName, root);
 
+    // Fallback: search by preferred_username first (maps to actual DIGIT userName, e.g., "ADMIN")
+    if (!user && claims.preferred_username) {
+      user = await this.digit.searchUser(claims.preferred_username, root);
+      if (!user && claims.preferred_username !== claims.preferred_username.toUpperCase()) {
+        user = await this.digit.searchUser(claims.preferred_username.toUpperCase(), root);
+      }
+    }
+
+    // Fallback: search by plain email
+    if (!user) {
+      user = await this.digit.searchUser(claims.email, root);
+    }
+
     if (user) {
-      // Existing user: rotate password
-      await this.digit.updateUserPassword(user.uuid, password);
+      // Existing user: try getting token with the user's existing password
+      // For KC-provisioned users, we don't know the password, so we'll set one
       this.metrics.userProvisionTotal.inc({ result: "existing" });
     } else {
       // New user: create
@@ -139,7 +152,28 @@ export class UserResolverService {
       this.metrics.userProvisionTotal.inc({ result: "created" });
     }
 
-    const tokenResult = await this.digit.getUserToken(userName, password, root, userType);
+    // Try to get DIGIT token — for existing users, try multiple password strategies
+    let tokenResult: { token: string; expiresIn: number };
+    const effectiveUserName = user.userName;
+    // Use actual user type from DIGIT (more reliable than JWT for existing users)
+    const effectiveUserType = user.type || userType;
+    this.logger.log(`Token acquisition: userName=${effectiveUserName}, type=${effectiveUserType}, tenant=${root}`);
+    try {
+      // Strategy 1: random password (new users created by v2)
+      tokenResult = await this.digit.getUserToken(effectiveUserName, password, root, effectiveUserType);
+    } catch {
+      try {
+        // Strategy 2: v1 deterministic password (existing users created by v1)
+        const v1Password = this.digit.generateV1Password(claims.sub);
+        tokenResult = await this.digit.getUserToken(effectiveUserName, v1Password, root, effectiveUserType);
+        password = v1Password;
+      } catch {
+        // Strategy 3: system default password (pre-existing DIGIT users like ADMIN)
+        const defaultPassword = this.digit.getSystemPassword();
+        tokenResult = await this.digit.getUserToken(effectiveUserName, defaultPassword, root, effectiveUserType);
+        password = defaultPassword;
+      }
+    }
     const token = tokenResult.token;
     const tokenExpiry = Date.now() + tokenResult.expiresIn;
 

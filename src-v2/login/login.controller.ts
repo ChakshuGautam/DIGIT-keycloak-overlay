@@ -34,7 +34,7 @@ export class LoginController {
   ) {
     this.kcInternalUrl =
       this.config.get<string>("KEYCLOAK_INTERNAL_URL") ?? "http://keycloak:8080";
-    this.kcRealm = this.config.get<string>("KEYCLOAK_REALM") ?? "digit";
+    this.kcRealm = this.config.get<string>("KEYCLOAK_USER_REALM") ?? "digit-sandbox";
     this.bffClientId =
       this.config.get<string>("KEYCLOAK_BFF_CLIENT_ID") ?? "bff-login";
     this.bffClientSecret =

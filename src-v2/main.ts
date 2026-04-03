@@ -12,18 +12,9 @@ async function bootstrap() {
 
   app.enableShutdownHooks();
 
+  // CORS handled via middleware in proxy controller to avoid
+  // Fastify route conflict with @All("*") wildcard handler
   const config = app.get(ConfigService);
-  const origins = config.get<string>("CORS_ALLOWED_ORIGINS");
-  if (origins) {
-    app.enableCors({
-      origin: origins.split(",").map((o) => o.trim()),
-      credentials: true,
-      methods: ["GET", "POST", "OPTIONS", "DELETE"],
-      allowedHeaders: ["Content-Type", "Authorization"],
-    });
-  } else {
-    app.enableCors();
-  }
 
   const port = config.get<number>("PORT") || 3000;
   await app.listen(port, "0.0.0.0");
