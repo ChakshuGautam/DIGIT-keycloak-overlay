@@ -44,6 +44,8 @@ describe("UserResolverService", () => {
     updateUserPassword: vi.fn().mockResolvedValue(undefined),
     updateUserRoles: vi.fn().mockResolvedValue(undefined),
     resolveUserType: vi.fn().mockReturnValue("CITIZEN"),
+    generateV1Password: vi.fn().mockReturnValue("Kcabcdef@1"),
+    getSystemPassword: vi.fn().mockReturnValue("eGov@123"),
   };
 
   const mockMetrics = {
@@ -105,19 +107,16 @@ describe("UserResolverService", () => {
     expect(mockCache.set).toHaveBeenCalled();
   });
 
-  it("finds existing user and rotates password on cache miss", async () => {
+  it("finds existing user and gets token on cache miss", async () => {
     mockCache.get.mockResolvedValue(null);
     mockDigit.searchUser.mockResolvedValue(digitUser);
 
     const result = await service.resolve(claims, "pg.citya");
 
-    expect(mockDigit.updateUserPassword).toHaveBeenCalledWith(
-      digitUser.uuid,
-      "KcRandom123@1",
-    );
     expect(mockDigit.createUser).not.toHaveBeenCalled();
     expect(mockDigit.getUserToken).toHaveBeenCalled();
     expect(result.token).toBe("digit-token");
+    expect(mockCache.set).toHaveBeenCalled();
   });
 
   it("uses realm-namespaced userName for search", async () => {
@@ -218,5 +217,81 @@ describe("UserResolverService", () => {
       "pg",
       "EMPLOYEE",
     );
+  });
+
+  it("syncs name change from JWT claims", async () => {
+    const cached: CachedSession = {
+      user: { ...digitUser, name: "Alice Old" },
+      password: "KcRandom123@1",
+      cachedAt: Date.now(),
+      token: "digit-token",
+      tokenExpiry: Date.now() + 86400000,
+    };
+    mockCache.get.mockResolvedValue(cached);
+
+    const updatedClaims = { ...claims, name: "Alice New" };
+    const result = await service.resolve(updatedClaims, "pg.citya");
+
+    expect(result.user.name).toBe("Alice New");
+  });
+
+  it("provisions user with only CITIZEN when no roles in JWT", async () => {
+    mockCache.get.mockResolvedValue(null);
+    mockDigit.searchUser.mockResolvedValue(null);
+
+    const noRoleClaims: JwtClaims = {
+      sub: "kc-noroles-1",
+      email: "plain@example.com",
+      realm: "pg",
+      roles: [],
+    };
+
+    const citizenUser = {
+      ...digitUser,
+      uuid: "digit-noroles-1",
+      emailId: "plain@example.com",
+      roles: [{ code: "CITIZEN", name: "Citizen" }],
+    };
+    mockDigit.createUser.mockResolvedValue(citizenUser);
+
+    const result = await service.resolve(noRoleClaims, "pg.citya");
+
+    expect(result.user.roles).toEqual([
+      { code: "CITIZEN", name: "Citizen" },
+    ]);
+    expect(mockDigit.createUser).toHaveBeenCalled();
+  });
+
+  it("falls back to v1 password when random password fails", async () => {
+    mockCache.get.mockResolvedValue(null);
+    mockDigit.searchUser.mockResolvedValue(null);
+
+    // First getUserToken (random pw) fails, second (v1 pw) succeeds
+    mockDigit.getUserToken
+      .mockRejectedValueOnce(new Error("401"))
+      .mockResolvedValueOnce({ token: "v1-token", expiresIn: 86400000 });
+
+    const result = await service.resolve(claims, "pg.citya");
+
+    expect(result.token).toBe("v1-token");
+    expect(mockDigit.getUserToken).toHaveBeenCalledTimes(2);
+    expect(mockDigit.generateV1Password).toHaveBeenCalledWith("kc-sub-1");
+  });
+
+  it("falls back to system password when v1 password also fails", async () => {
+    mockCache.get.mockResolvedValue(null);
+    mockDigit.searchUser.mockResolvedValue(null);
+
+    // All three attempts: random fails, v1 fails, system default succeeds
+    mockDigit.getUserToken
+      .mockRejectedValueOnce(new Error("401"))
+      .mockRejectedValueOnce(new Error("401"))
+      .mockResolvedValueOnce({ token: "sys-token", expiresIn: 86400000 });
+
+    const result = await service.resolve(claims, "pg.citya");
+
+    expect(result.token).toBe("sys-token");
+    expect(mockDigit.getUserToken).toHaveBeenCalledTimes(3);
+    expect(mockDigit.getSystemPassword).toHaveBeenCalled();
   });
 });

@@ -187,4 +187,56 @@ describe("CacheService", () => {
     expect(service.isStale(freshSession)).toBe(false);
     expect(service.isStale(freshSession, 3600)).toBe(false);
   });
+
+  it("scopes cache by tenant (same sub, different tenants)", async () => {
+    const session1 = makeCachedSession({
+      user: {
+        uuid: "u3",
+        userName: "c@d.com",
+        name: "Carol",
+        emailId: "c@d.com",
+        mobileNumber: "9000012347",
+        tenantId: "pg.citya",
+        type: "CITIZEN",
+        roles: [{ code: "CITIZEN", name: "Citizen" }],
+      },
+    });
+    const session2 = makeCachedSession({
+      user: {
+        uuid: "u4",
+        userName: "c@d.com",
+        name: "Carol",
+        emailId: "c@d.com",
+        mobileNumber: "9000012347",
+        tenantId: "pg.cityb",
+        type: "CITIZEN",
+        roles: [{ code: "CITIZEN", name: "Citizen" }],
+      },
+    });
+
+    mockRedis.set.mockResolvedValue("OK");
+    await service.set("sub-3", "pg.citya", session1);
+    await service.set("sub-3", "pg.cityb", session2);
+
+    // Verify redis was called with different keys
+    expect(mockRedis.set).toHaveBeenCalledWith(
+      "keycloak:sub-3:pg.citya",
+      expect.any(String),
+      "EX",
+      3600,
+    );
+    expect(mockRedis.set).toHaveBeenCalledWith(
+      "keycloak:sub-3:pg.cityb",
+      expect.any(String),
+      "EX",
+      3600,
+    );
+
+    // Memory fallback should also have separate entries
+    (service as any).redisHealthy = false;
+    const r1 = await service.get("sub-3", "pg.citya");
+    const r2 = await service.get("sub-3", "pg.cityb");
+    expect(r1!.user.uuid).toBe("u3");
+    expect(r2!.user.uuid).toBe("u4");
+  });
 });

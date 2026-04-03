@@ -105,4 +105,111 @@ describe("DigitClientService", () => {
       "pg:alice@example.com",
     );
   });
+
+  it("generates deterministic mobile number from sub", () => {
+    const m1 = service.generateMobileNumber("fixed-sub-id");
+    const m2 = service.generateMobileNumber("fixed-sub-id");
+    expect(m1).toBe(m2);
+  });
+
+  it("generates v1-compatible deterministic password", () => {
+    const pw = service.generateV1Password("test-seed");
+    expect(pw).toMatch(/^Kc[0-9a-f]{6}@1$/);
+    // Same seed = same password
+    expect(service.generateV1Password("test-seed")).toBe(pw);
+  });
+
+  it("generates different v1 passwords for different seeds", () => {
+    expect(service.generateV1Password("seed-a")).not.toBe(
+      service.generateV1Password("seed-b"),
+    );
+  });
+
+  it("creates user via postToDigit", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        user: [
+          {
+            uuid: "new-u1",
+            userName: "pg:test@test.com",
+            name: "Test",
+            emailId: "test@test.com",
+            mobileNumber: "9000012345",
+            tenantId: "pg",
+            type: "CITIZEN",
+            roles: [{ code: "CITIZEN", name: "Citizen", tenantId: "pg" }],
+          },
+        ],
+      }),
+    });
+
+    const user = await service.createUser({
+      userName: "pg:test@test.com",
+      name: "Test",
+      email: "test@test.com",
+      mobileNumber: "9000012345",
+      tenantId: "pg",
+      password: "KcRandom123@1",
+      type: "CITIZEN",
+    });
+
+    expect(user.uuid).toBe("new-u1");
+    expect(user.emailId).toBe("test@test.com");
+    expect(circuitBreaker.exec).toHaveBeenCalledWith(
+      "egov-user",
+      expect.any(Function),
+    );
+  });
+
+  it("throws on createUser failure", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => "Internal Server Error",
+    });
+
+    await expect(
+      service.createUser({
+        userName: "pg:fail@test.com",
+        name: "Fail",
+        email: "fail@test.com",
+        mobileNumber: "9000000000",
+        tenantId: "pg",
+        password: "KcRandom123@1",
+        type: "CITIZEN",
+      }),
+    ).rejects.toThrow("500");
+  });
+
+  it("getUserToken returns token and expiresIn", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        access_token: "citizen-token-abc",
+        expires_in: 604800,
+      }),
+    });
+
+    const result = await service.getUserToken(
+      "alice@test.com",
+      "Kcabc123@1",
+      "pg",
+      "CITIZEN",
+    );
+    expect(result.token).toBe("citizen-token-abc");
+    expect(result.expiresIn).toBe(604800);
+  });
+
+  it("throws on getUserToken failure", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => "Unauthorized",
+    });
+
+    await expect(
+      service.getUserToken("bad@test.com", "wrong", "pg", "CITIZEN"),
+    ).rejects.toThrow("401");
+  });
 });

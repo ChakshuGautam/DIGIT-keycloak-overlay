@@ -88,4 +88,53 @@ describe("JwtService", () => {
     const claims = await service.validate("Bearer not.a.valid.jwt");
     expect(claims).toBeNull();
   });
+
+  it("returns null for JWT missing email claim", async () => {
+    const token = await new SignJWT({
+      sub: "user-1",
+      name: "No Email User",
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "test-kid" })
+      .setIssuer("http://keycloak:8080/realms/test-realm")
+      .setAudience("digit-sandbox-ui")
+      .setExpirationTime("1h")
+      .sign(privateKey);
+
+    const claims = await service.validate(`Bearer ${token}`);
+    expect(claims).toBeNull();
+  });
+
+  it("extracts realm name from issuer URL", async () => {
+    const token = await makeJwt();
+    const claims = await service.validate(`Bearer ${token}`);
+    expect(claims).not.toBeNull();
+    expect(claims!.realm).toBe("test-realm");
+  });
+
+  it("extracts roles from realm_access", async () => {
+    const token = await makeJwt({
+      realm_access: { roles: ["EMPLOYEE", "GRO"] },
+    });
+    const claims = await service.validate(`Bearer ${token}`);
+    expect(claims).not.toBeNull();
+    expect(claims!.roles).toEqual(["EMPLOYEE", "GRO"]);
+  });
+
+  it("returns empty roles when realm_access is missing", async () => {
+    // Build a JWT without realm_access
+    const token = await new SignJWT({
+      sub: "user-1",
+      email: "test@example.com",
+      name: "Test User",
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "test-kid" })
+      .setIssuer("http://keycloak:8080/realms/test-realm")
+      .setAudience("digit-sandbox-ui")
+      .setExpirationTime("1h")
+      .sign(privateKey);
+
+    const claims = await service.validate(`Bearer ${token}`);
+    expect(claims).not.toBeNull();
+    expect(claims!.roles).toEqual([]);
+  });
 });

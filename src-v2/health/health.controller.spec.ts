@@ -25,9 +25,9 @@ describe("HealthController", () => {
     controller = new HealthController(mockCache as any, mockCircuit as any);
   });
 
-  it("/healthz returns ok", async () => {
+  it("/healthz returns ok with redis status", async () => {
     const result = await controller.liveness();
-    expect(result).toEqual({ status: "ok" });
+    expect(result).toEqual({ status: "ok", redis: "connected" });
   });
 
   it("/readyz returns ok when all healthy", async () => {
