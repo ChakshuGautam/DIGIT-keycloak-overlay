@@ -1,3 +1,4 @@
+import "reflect-metadata";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { HttpException } from "@nestjs/common";
 import { HealthController } from "./health.controller";

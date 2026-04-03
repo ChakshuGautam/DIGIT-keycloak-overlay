@@ -12,6 +12,7 @@ export default defineConfig({
   test: {
     globals: true,
     testTimeout: 15000,
+    setupFiles: ["src-v2/test-setup.ts"],
     include: ["src-v2/**/*.spec.ts"],
     pool: "forks",
   },
