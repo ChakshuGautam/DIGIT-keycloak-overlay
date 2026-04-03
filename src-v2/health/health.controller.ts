@@ -14,7 +14,8 @@ export class HealthController {
 
   @Get("/healthz")
   async liveness() {
-    return { status: "ok" };
+    const redisOk = await this.cache.ping();
+    return { status: "ok", redis: redisOk ? "connected" : "disconnected" };
   }
 
   @Get("/readyz")
