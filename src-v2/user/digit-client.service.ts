@@ -1,0 +1,291 @@
+import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { randomBytes, createHash } from "crypto";
+import { CircuitBreakerService } from "../circuit-breaker/circuit-breaker.service";
+import { MetricsService } from "../metrics/metrics.service";
+import { DigitUser } from "../types";
+
+@Injectable()
+export class DigitClientService implements OnModuleInit {
+  private readonly logger = new Logger(DigitClientService.name);
+  private systemToken: string | null = null;
+  private refreshInterval: ReturnType<typeof setInterval> | null = null;
+
+  constructor(
+    private readonly config: ConfigService,
+    private readonly circuitBreaker: CircuitBreakerService,
+    private readonly metrics: MetricsService,
+  ) {}
+
+  async onModuleInit(): Promise<void> {
+    await this.acquireSystemToken();
+
+    // Refresh every 6 days (in ms)
+    const SIX_DAYS_MS = 6 * 24 * 60 * 60 * 1000;
+    this.refreshInterval = setInterval(() => {
+      this.acquireSystemToken().catch((err) =>
+        this.logger.error("System token refresh failed", err),
+      );
+    }, SIX_DAYS_MS);
+  }
+
+  hasSystemToken(): boolean {
+    return this.systemToken !== null;
+  }
+
+  generateRandomPassword(): string {
+    // Format: Kc{10 random base64url chars}@1 = 14 chars total
+    const random = randomBytes(9).toString("base64url").slice(0, 10);
+    return `Kc${random}@1`;
+  }
+
+  generateMobileNumber(sub: string, seed?: number): string {
+    const input = seed !== undefined ? `${sub}:${seed}` : sub;
+    const hash = createHash("sha256").update(input).digest("hex");
+    const first5 = hash.slice(0, 5);
+    const num = parseInt(first5, 16) % 100000;
+    return `90000${num.toString().padStart(5, "0")}`;
+  }
+
+  namespacedUserName(realm: string, email: string): string {
+    return `${realm}:${email}`;
+  }
+
+  resolveUserType(digitUserType?: string): string {
+    return digitUserType === "EMPLOYEE" ? "EMPLOYEE" : "CITIZEN";
+  }
+
+  async searchUser(
+    email: string,
+    tenantId: string,
+  ): Promise<DigitUser | null> {
+    const host = this.config.get<string>("DIGIT_USER_HOST");
+    const url = `${host}/user/_search`;
+
+    return this.circuitBreaker.exec("egov-user", async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10_000);
+
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            RequestInfo: { authToken: this.systemToken },
+            tenantId,
+            userName: email,
+          }),
+          signal: controller.signal,
+        });
+
+        if (!res.ok) {
+          throw new Error(`searchUser failed: ${res.status}`);
+        }
+
+        const data = await res.json();
+        const users = data.user || [];
+        return users.length > 0 ? users[0] : null;
+      } finally {
+        clearTimeout(timeout);
+      }
+    });
+  }
+
+  async createUser(params: {
+    userName: string;
+    name: string;
+    email: string;
+    mobileNumber: string;
+    tenantId: string;
+    password: string;
+    type: string;
+    roles?: Array<{ code: string; name: string; tenantId?: string }>;
+  }): Promise<DigitUser> {
+    const host = this.config.get<string>("DIGIT_USER_HOST");
+    const url = `${host}/user/users/_createnovalidate`;
+
+    const body = {
+      RequestInfo: { authToken: this.systemToken },
+      user: {
+        userName: params.userName,
+        name: params.name,
+        emailId: params.email,
+        mobileNumber: params.mobileNumber,
+        tenantId: params.tenantId,
+        password: params.password,
+        type: params.type,
+        roles: params.roles || [
+          { code: "CITIZEN", name: "Citizen", tenantId: params.tenantId },
+        ],
+        active: true,
+      },
+    };
+
+    try {
+      return await this.postToDigit<DigitUser>(url, body, "user");
+    } catch (err: any) {
+      // Mobile collision retry: if 400 with "mobile" in message, retry with seed=1
+      if (
+        err.message &&
+        err.message.includes("400") &&
+        err.message.toLowerCase().includes("mobile")
+      ) {
+        const newMobile = this.generateMobileNumber(params.userName, 1);
+        body.user.mobileNumber = newMobile;
+        return this.postToDigit<DigitUser>(url, body, "user");
+      }
+      throw err;
+    }
+  }
+
+  async updateUserPassword(uuid: string, password: string): Promise<void> {
+    const host = this.config.get<string>("DIGIT_USER_HOST");
+    const url = `${host}/user/users/_updatenovalidate`;
+
+    await this.postToDigit(url, {
+      RequestInfo: { authToken: this.systemToken },
+      user: { uuid, password },
+    });
+  }
+
+  async updateUserRoles(
+    uuid: string,
+    tenantId: string,
+    roles: Array<{ code: string; name: string; tenantId?: string }>,
+  ): Promise<void> {
+    const host = this.config.get<string>("DIGIT_USER_HOST");
+    const url = `${host}/user/users/_updatenovalidate`;
+
+    // Always include CITIZEN role
+    const hasCitizen = roles.some((r) => r.code === "CITIZEN");
+    const allRoles = hasCitizen
+      ? roles
+      : [{ code: "CITIZEN", name: "Citizen", tenantId }, ...roles];
+
+    await this.postToDigit(url, {
+      RequestInfo: { authToken: this.systemToken },
+      user: { uuid, tenantId, roles: allRoles },
+    });
+  }
+
+  async getUserToken(
+    userName: string,
+    password: string,
+    tenantId: string,
+    userType: string,
+  ): Promise<{ token: string; expiresIn: number }> {
+    const host = this.config.get<string>("DIGIT_USER_HOST");
+    const url = `${host}/user/oauth/token`;
+
+    const formBody = new URLSearchParams({
+      username: userName,
+      password,
+      tenantId,
+      userType,
+      grant_type: "password",
+      scope: "read",
+    });
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: "Basic ZWdvdi11c2VyLWNsaWVudDo=",
+      },
+      body: formBody.toString(),
+    });
+
+    if (!res.ok) {
+      throw new Error(`getUserToken failed: ${res.status}`);
+    }
+
+    const data = await res.json();
+    return {
+      token: data.access_token,
+      expiresIn: data.expires_in,
+    };
+  }
+
+  private async acquireSystemToken(): Promise<void> {
+    const host = this.config.get<string>("DIGIT_USER_HOST");
+    const username = this.config.get<string>("DIGIT_SYSTEM_USERNAME");
+    const password = this.config.get<string>("DIGIT_SYSTEM_PASSWORD");
+    const userType = this.config.get<string>("DIGIT_SYSTEM_USER_TYPE");
+    const tenant = this.config.get<string>("DIGIT_SYSTEM_TENANT");
+
+    const url = `${host}/user/oauth/token`;
+
+    const formBody = new URLSearchParams({
+      username: username!,
+      password: password!,
+      tenantId: tenant!,
+      userType: userType!,
+      grant_type: "password",
+      scope: "read",
+    });
+
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: "Basic ZWdvdi11c2VyLWNsaWVudDo=",
+        },
+        body: formBody.toString(),
+      });
+
+      if (!res.ok) {
+        throw new Error(`System token acquisition failed: ${res.status}`);
+      }
+
+      const data = await res.json();
+      this.systemToken = data.access_token;
+      this.metrics.tokenRefreshTotal.inc({
+        token_type: "system",
+        result: "success",
+      });
+      this.logger.log("System token acquired successfully");
+    } catch (err) {
+      this.metrics.tokenRefreshTotal.inc({
+        token_type: "system",
+        result: "failure",
+      });
+      this.logger.error("Failed to acquire system token", err);
+      throw err;
+    }
+  }
+
+  private async postToDigit<T>(
+    url: string,
+    body: unknown,
+    responseKey?: string,
+  ): Promise<T> {
+    return this.circuitBreaker.exec("egov-user", async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10_000);
+
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`DIGIT API error ${res.status}: ${text}`);
+        }
+
+        const data = await res.json();
+        if (responseKey) {
+          const items = data[responseKey];
+          return Array.isArray(items) ? items[0] : items;
+        }
+        return data;
+      } finally {
+        clearTimeout(timeout);
+      }
+    });
+  }
+}
