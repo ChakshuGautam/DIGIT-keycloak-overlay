@@ -6,13 +6,15 @@ import type { JwtClaims } from "../types";
 
 @Injectable()
 export class JwtService {
-  private readonly audience: string;
+  private readonly audience: string | string[];
   private readonly jwksCache = new Map<string, JWTVerifyGetKey>();
 
   private readonly kcInternalUrl: string;
 
   constructor(private readonly config: ConfigService) {
-    this.audience = this.config.get<string>("KEYCLOAK_AUDIENCE") || "digit-ui";
+    // Support multiple audiences (comma-separated) for multi-realm deployments
+    const audConfig = this.config.get<string>("KEYCLOAK_AUDIENCE") || "digit-ui";
+    this.audience = audConfig.includes(",") ? audConfig.split(",").map(a => a.trim()) : audConfig;
     this.kcInternalUrl = this.config.get<string>("KEYCLOAK_INTERNAL_URL") || "";
   }
 

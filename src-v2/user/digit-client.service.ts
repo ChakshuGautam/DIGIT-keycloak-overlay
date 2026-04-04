@@ -82,7 +82,7 @@ export class DigitClientService implements OnModuleInit {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            RequestInfo: { authToken: this.systemToken },
+            RequestInfo: { apiId: "Rainmaker", authToken: this.systemToken },
             tenantId,
             userName: email,
           }),
@@ -106,7 +106,8 @@ export class DigitClientService implements OnModuleInit {
     userName: string;
     name: string;
     email: string;
-    mobileNumber: string;
+    mobileNumber?: string;
+    keycloakSub?: string;
     tenantId: string;
     password: string;
     type: string;
@@ -115,13 +116,15 @@ export class DigitClientService implements OnModuleInit {
     const host = this.config.get<string>("DIGIT_USER_HOST");
     const url = `${host}/user/users/_createnovalidate`;
 
+    const mobile = params.mobileNumber || this.generateMobileNumber(params.keycloakSub || params.userName);
+
     const body = {
-      RequestInfo: { authToken: this.systemToken },
+      RequestInfo: { apiId: "Rainmaker", authToken: this.systemToken },
       user: {
         userName: params.userName,
         name: params.name,
         emailId: params.email,
-        mobileNumber: params.mobileNumber,
+        mobileNumber: mobile,
         tenantId: params.tenantId,
         password: params.password,
         type: params.type,
@@ -182,7 +185,7 @@ export class DigitClientService implements OnModuleInit {
       : [{ code: "CITIZEN", name: "Citizen", tenantId }, ...roles];
 
     await this.postToDigit(url, {
-      RequestInfo: { authToken: this.systemToken },
+      RequestInfo: { apiId: "Rainmaker", authToken: this.systemToken },
       user: { uuid, tenantId, roles: allRoles },
     });
   }
