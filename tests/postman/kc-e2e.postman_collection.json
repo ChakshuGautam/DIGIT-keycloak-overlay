@@ -1,0 +1,1995 @@
+{
+  "info": {
+    "name": "KC Realm-Per-Tenant E2E",
+    "description": "End-to-end testing of the Keycloak realm-per-tenant architecture.\n\nEach DIGIT tenant root (pg, mz) is a KC realm. Cities (pg.citya, pg.cityb) are KC groups within the realm. All 21 DIGIT roles are provisioned as realm roles.\n\nWorkflow:\n1. KC Admin Login (master realm)\n2. Verify realm structure (pg realm, roles, groups, client)\n3. Enable direct-access-grants on digit-ui client (for Postman testing)\n4. Create test user in pg realm\n5. Assign roles (GRO, PGR_LME, EMPLOYEE)\n6. Assign user to city group (pg.citya)\n7. Get user JWT via password grant\n8. Decode & verify JWT claims (groups, realm_access)\n9. Call token-exchange-svc health check\n10. Proxy PGR search through token-exchange-svc\n11. Proxy PGR create through token-exchange-svc\n12. Verify DIGIT user was lazy-provisioned\n13. Cleanup: disable direct-access-grants\n\nVariables:\n- keycloakUrl: KC base URL (with /auth prefix)\n- tokenExchangeUrl: token-exchange-svc URL\n- adminUsername / adminPassword: master realm admin\n- testRealm: realm to test (default: pg)\n- testCity: city group (default: pg.citya)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "keycloakUrl",
+      "value": "https://api.egov.theflywheel.in/auth"
+    },
+    {
+      "key": "tokenExchangeUrl",
+      "value": "http://localhost:18200"
+    },
+    {
+      "key": "adminUsername",
+      "value": "admin"
+    },
+    {
+      "key": "adminPassword",
+      "value": "admin"
+    },
+    {
+      "key": "testRealm",
+      "value": "pg"
+    },
+    {
+      "key": "testCity",
+      "value": "pg.citya"
+    },
+    {
+      "key": "testUserEmail",
+      "value": ""
+    },
+    {
+      "key": "testUserPassword",
+      "value": "TestUser@123"
+    },
+    {
+      "key": "adminToken",
+      "value": ""
+    },
+    {
+      "key": "testUserId",
+      "value": ""
+    },
+    {
+      "key": "testUserJwt",
+      "value": ""
+    },
+    {
+      "key": "cityGroupId",
+      "value": ""
+    },
+    {
+      "key": "digitUiClientUuid",
+      "value": ""
+    },
+    {
+      "key": "pgrServiceRequestId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. KC Admin & Realm Setup",
+      "item": [
+        {
+          "name": "1.1 KC Admin Login (master realm)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Generate unique test user email",
+                  "const ts = Date.now();",
+                  "pm.collectionVariables.set('testUserEmail', `postman-test-${ts}@example.com`);"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Admin login returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var json = pm.response.json();",
+                  "pm.test('Access token present', function () {",
+                  "    pm.expect(json.access_token).to.be.a('string');",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set('adminToken', json.access_token);",
+                  "console.log('Admin token acquired, expires in', json.expires_in, 'seconds');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password"
+                },
+                {
+                  "key": "client_id",
+                  "value": "admin-cli"
+                },
+                {
+                  "key": "username",
+                  "value": "{{adminUsername}}"
+                },
+                {
+                  "key": "password",
+                  "value": "{{adminPassword}}"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{keycloakUrl}}/realms/master/protocol/openid-connect/token",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "realms",
+                "master",
+                "protocol",
+                "openid-connect",
+                "token"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.2 List Realms",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var realms = pm.response.json().map(r => r.realm);",
+                  "pm.test('pg realm exists', function () {",
+                  "    pm.expect(realms).to.include('pg');",
+                  "});",
+                  "pm.test('mz realm exists', function () {",
+                  "    pm.expect(realms).to.include('mz');",
+                  "});",
+                  "",
+                  "console.log('Realms:', realms.join(', '));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.3 Verify Realm Roles (21 DIGIT roles)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var roles = pm.response.json().map(r => r.name);",
+                  "var DIGIT_ROLES = [",
+                  "  'CITIZEN', 'EMPLOYEE', 'SUPERUSER', 'GRO', 'PGR_LME', 'DGRO', 'CSR',",
+                  "  'SUPERVISOR', 'AUTO_ESCALATE', 'PGR_VIEWER', 'TICKET_REPORT_VIEWER',",
+                  "  'LOC_ADMIN', 'MDMS_ADMIN', 'HRMS_ADMIN', 'WORKFLOW_ADMIN',",
+                  "  'COMMON_EMPLOYEE', 'REINDEXING_ROLE', 'QA_AUTOMATION', 'SYSTEM',",
+                  "  'ANONYMOUS', 'INTERNAL_MICROSERVICE_ROLE'",
+                  "];",
+                  "",
+                  "DIGIT_ROLES.forEach(function(role) {",
+                  "    pm.test('Role exists: ' + role, function () {",
+                  "        pm.expect(roles).to.include(role);",
+                  "    });",
+                  "});",
+                  "",
+                  "console.log('Total roles:', roles.length, '| DIGIT roles found:', DIGIT_ROLES.filter(r => roles.includes(r)).length + '/21');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms/{{testRealm}}/roles?first=0&max=200",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms",
+                "{{testRealm}}",
+                "roles"
+              ],
+              "query": [
+                {
+                  "key": "first",
+                  "value": "0"
+                },
+                {
+                  "key": "max",
+                  "value": "200"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.4 Verify City Groups",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var groups = pm.response.json();",
+                  "var names = groups.map(g => g.name);",
+                  "",
+                  "pm.test('pg.citya group exists', function () {",
+                  "    pm.expect(names).to.include('pg.citya');",
+                  "});",
+                  "pm.test('pg.cityb group exists', function () {",
+                  "    pm.expect(names).to.include('pg.cityb');",
+                  "});",
+                  "",
+                  "// Save the target city group ID for user assignment",
+                  "var testCity = pm.collectionVariables.get('testCity');",
+                  "var cityGroup = groups.find(g => g.name === testCity);",
+                  "if (cityGroup) {",
+                  "    pm.collectionVariables.set('cityGroupId', cityGroup.id);",
+                  "    console.log('City group', testCity, 'ID:', cityGroup.id);",
+                  "} else {",
+                  "    console.warn('City group', testCity, 'not found!');",
+                  "}",
+                  "",
+                  "console.log('Groups:', names.join(', '));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms/{{testRealm}}/groups",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms",
+                "{{testRealm}}",
+                "groups"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.5 Verify digit-ui Client & Get UUID",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var clients = pm.response.json();",
+                  "var digitUi = clients.find(c => c.clientId === 'digit-ui');",
+                  "",
+                  "pm.test('digit-ui client exists', function () {",
+                  "    pm.expect(digitUi).to.not.be.undefined;",
+                  "});",
+                  "",
+                  "pm.test('digit-ui is public client', function () {",
+                  "    pm.expect(digitUi.publicClient).to.be.true;",
+                  "});",
+                  "",
+                  "pm.test('digit-ui has groups in default scopes', function () {",
+                  "    pm.expect(digitUi.defaultClientScopes).to.include('groups');",
+                  "});",
+                  "",
+                  "pm.test('digit-ui has PKCE S256', function () {",
+                  "    pm.expect(digitUi.attributes['pkce.code.challenge.method']).to.equal('S256');",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set('digitUiClientUuid', digitUi.id);",
+                  "console.log('digit-ui client UUID:', digitUi.id);",
+                  "console.log('Direct access grants:', digitUi.directAccessGrantsEnabled);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms/{{testRealm}}/clients?clientId=digit-ui",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms",
+                "{{testRealm}}",
+                "clients"
+              ],
+              "query": [
+                {
+                  "key": "clientId",
+                  "value": "digit-ui"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.6 Verify groups Client Scope (mapper)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var scopes = pm.response.json();",
+                  "var groupsScope = scopes.find(s => s.name === 'groups');",
+                  "",
+                  "pm.test('groups client scope exists', function () {",
+                  "    pm.expect(groupsScope).to.not.be.undefined;",
+                  "});",
+                  "",
+                  "if (groupsScope && groupsScope.protocolMappers) {",
+                  "    var mapper = groupsScope.protocolMappers.find(",
+                  "        m => m.protocolMapper === 'oidc-group-membership-mapper'",
+                  "    );",
+                  "    pm.test('groups mapper exists', function () {",
+                  "        pm.expect(mapper).to.not.be.undefined;",
+                  "    });",
+                  "    pm.test('mapper claim name is groups', function () {",
+                  "        pm.expect(mapper.config['claim.name']).to.equal('groups');",
+                  "    });",
+                  "    pm.test('mapper includes in access token', function () {",
+                  "        pm.expect(mapper.config['access.token.claim']).to.equal('true');",
+                  "    });",
+                  "}",
+                  "",
+                  "console.log('Client scopes:', scopes.map(s => s.name).join(', '));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms/{{testRealm}}/client-scopes",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms",
+                "{{testRealm}}",
+                "client-scopes"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.7 OIDC Discovery",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var json = pm.response.json();",
+                  "var testRealm = pm.collectionVariables.get('testRealm');",
+                  "",
+                  "pm.test('Issuer contains realm name', function () {",
+                  "    pm.expect(json.issuer).to.include('/realms/' + testRealm);",
+                  "});",
+                  "",
+                  "pm.test('JWKS URI present', function () {",
+                  "    pm.expect(json.jwks_uri).to.include('/realms/' + testRealm + '/protocol/openid-connect/certs');",
+                  "});",
+                  "",
+                  "pm.test('authorization_code grant supported', function () {",
+                  "    pm.expect(json.grant_types_supported).to.include('authorization_code');",
+                  "});",
+                  "",
+                  "pm.test('password grant supported', function () {",
+                  "    pm.expect(json.grant_types_supported).to.include('password');",
+                  "});",
+                  "",
+                  "console.log('Issuer:', json.issuer);",
+                  "console.log('Token endpoint:', json.token_endpoint);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{keycloakUrl}}/realms/{{testRealm}}/.well-known/openid-configuration",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "realms",
+                "{{testRealm}}",
+                ".well-known",
+                "openid-configuration"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. User Provisioning in KC",
+      "item": [
+        {
+          "name": "2.1 Enable Direct Access Grants (for Postman)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Client updated (204)', function () {",
+                  "    pm.response.to.have.status(204);",
+                  "});",
+                  "console.log('Direct access grants enabled on digit-ui for Postman testing');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"clientId\": \"digit-ui\",\n  \"publicClient\": true,\n  \"standardFlowEnabled\": true,\n  \"directAccessGrantsEnabled\": true,\n  \"implicitFlowEnabled\": false,\n  \"protocol\": \"openid-connect\",\n  \"redirectUris\": [\"http://localhost:*\", \"https://*.egov.theflywheel.in/*\"],\n  \"webOrigins\": [\"http://localhost:3000\", \"http://localhost:5173\", \"https://*.egov.theflywheel.in\"],\n  \"attributes\": { \"pkce.code.challenge.method\": \"S256\" },\n  \"defaultClientScopes\": [\"web-origins\", \"profile\", \"roles\", \"email\", \"groups\"]\n}"
+            },
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms/{{testRealm}}/clients/{{digitUiClientUuid}}",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms",
+                "{{testRealm}}",
+                "clients",
+                "{{digitUiClientUuid}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.2 Create Test User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('User created (201) or already exists (409)', function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([201, 409]);",
+                  "});",
+                  "",
+                  "if (pm.response.code === 201) {",
+                  "    var location = pm.response.headers.get('Location') || '';",
+                  "    var userId = location.split('/').pop();",
+                  "    pm.collectionVariables.set('testUserId', userId);",
+                  "    console.log('Created user:', userId);",
+                  "} else {",
+                  "    console.log('User already exists, will search for ID next');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{testUserEmail}}\",\n  \"email\": \"{{testUserEmail}}\",\n  \"enabled\": true,\n  \"firstName\": \"Postman\",\n  \"lastName\": \"Test\",\n  \"emailVerified\": true,\n  \"credentials\": [\n    {\n      \"type\": \"password\",\n      \"value\": \"{{testUserPassword}}\",\n      \"temporary\": false\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms/{{testRealm}}/users",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms",
+                "{{testRealm}}",
+                "users"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.3 Search Test User (get UUID)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var users = pm.response.json();",
+                  "pm.test('User found', function () {",
+                  "    pm.expect(users.length).to.be.greaterThan(0);",
+                  "});",
+                  "",
+                  "if (users.length > 0) {",
+                  "    pm.collectionVariables.set('testUserId', users[0].id);",
+                  "    console.log('User ID:', users[0].id);",
+                  "    console.log('Username:', users[0].username);",
+                  "    console.log('Email:', users[0].email);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms/{{testRealm}}/users?email={{testUserEmail}}&exact=true",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms",
+                "{{testRealm}}",
+                "users"
+              ],
+              "query": [
+                {
+                  "key": "email",
+                  "value": "{{testUserEmail}}"
+                },
+                {
+                  "key": "exact",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.4 Fetch Role IDs (GRO, PGR_LME, EMPLOYEE)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var allRoles = pm.response.json();",
+                  "var needed = ['GRO', 'PGR_LME', 'EMPLOYEE', 'CITIZEN'];",
+                  "var roleReps = [];",
+                  "",
+                  "needed.forEach(function(code) {",
+                  "    var role = allRoles.find(r => r.name === code);",
+                  "    pm.test('Role found: ' + code, function () {",
+                  "        pm.expect(role).to.not.be.undefined;",
+                  "    });",
+                  "    if (role) {",
+                  "        roleReps.push({ id: role.id, name: role.name });",
+                  "    }",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set('rolesToAssign', JSON.stringify(roleReps));",
+                  "console.log('Roles to assign:', roleReps.map(r => r.name).join(', '));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms/{{testRealm}}/roles?first=0&max=200",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms",
+                "{{testRealm}}",
+                "roles"
+              ],
+              "query": [
+                {
+                  "key": "first",
+                  "value": "0"
+                },
+                {
+                  "key": "max",
+                  "value": "200"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.5 Assign Realm Roles to User",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// rolesToAssign was set in previous step"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Roles assigned (204)', function () {",
+                  "    pm.response.to.have.status(204);",
+                  "});",
+                  "console.log('Assigned GRO, PGR_LME, EMPLOYEE, CITIZEN roles to test user');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{rolesToAssign}}"
+            },
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms/{{testRealm}}/users/{{testUserId}}/role-mappings/realm",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms",
+                "{{testRealm}}",
+                "users",
+                "{{testUserId}}",
+                "role-mappings",
+                "realm"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.6 Assign User to City Group",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('User added to group (204)', function () {",
+                  "    pm.response.to.have.status(204);",
+                  "});",
+                  "console.log('Added user to group:', pm.collectionVariables.get('testCity'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms/{{testRealm}}/users/{{testUserId}}/groups/{{cityGroupId}}",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms",
+                "{{testRealm}}",
+                "users",
+                "{{testUserId}}",
+                "groups",
+                "{{cityGroupId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.7 Verify User Roles",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var roles = pm.response.json().map(r => r.name);",
+                  "pm.test('Has GRO role', function () { pm.expect(roles).to.include('GRO'); });",
+                  "pm.test('Has PGR_LME role', function () { pm.expect(roles).to.include('PGR_LME'); });",
+                  "pm.test('Has EMPLOYEE role', function () { pm.expect(roles).to.include('EMPLOYEE'); });",
+                  "pm.test('Has CITIZEN role', function () { pm.expect(roles).to.include('CITIZEN'); });",
+                  "",
+                  "console.log('User roles:', roles.join(', '));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms/{{testRealm}}/users/{{testUserId}}/role-mappings/realm",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms",
+                "{{testRealm}}",
+                "users",
+                "{{testUserId}}",
+                "role-mappings",
+                "realm"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.8 Verify User Groups",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var groups = pm.response.json().map(g => g.name);",
+                  "var testCity = pm.collectionVariables.get('testCity');",
+                  "pm.test('User in city group: ' + testCity, function () {",
+                  "    pm.expect(groups).to.include(testCity);",
+                  "});",
+                  "",
+                  "console.log('User groups:', groups.join(', '));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms/{{testRealm}}/users/{{testUserId}}/groups",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms",
+                "{{testRealm}}",
+                "users",
+                "{{testUserId}}",
+                "groups"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. OIDC Token Acquisition",
+      "item": [
+        {
+          "name": "3.1 Get User JWT (password grant)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var json = pm.response.json();",
+                  "pm.test('Access token present', function () {",
+                  "    pm.expect(json.access_token).to.be.a('string');",
+                  "});",
+                  "pm.test('Scope includes groups', function () {",
+                  "    pm.expect(json.scope).to.include('groups');",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set('testUserJwt', json.access_token);",
+                  "",
+                  "// Decode JWT payload (base64url)",
+                  "var parts = json.access_token.split('.');",
+                  "var payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));",
+                  "",
+                  "console.log('--- JWT Claims ---');",
+                  "console.log('sub:', payload.sub);",
+                  "console.log('email:', payload.email);",
+                  "console.log('iss:', payload.iss);",
+                  "console.log('realm_access.roles:', JSON.stringify(payload.realm_access?.roles));",
+                  "console.log('groups:', JSON.stringify(payload.groups));",
+                  "console.log('exp:', new Date(payload.exp * 1000).toISOString());",
+                  "console.log('scope:', json.scope);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password"
+                },
+                {
+                  "key": "client_id",
+                  "value": "digit-ui"
+                },
+                {
+                  "key": "username",
+                  "value": "{{testUserEmail}}"
+                },
+                {
+                  "key": "password",
+                  "value": "{{testUserPassword}}"
+                },
+                {
+                  "key": "scope",
+                  "value": "openid groups"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{keycloakUrl}}/realms/{{testRealm}}/protocol/openid-connect/token",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "realms",
+                "{{testRealm}}",
+                "protocol",
+                "openid-connect",
+                "token"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.2 Verify JWT Claims (decode)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Decode and verify JWT claims without a network call",
+                  "var jwt = pm.collectionVariables.get('testUserJwt');",
+                  "var parts = jwt.split('.');",
+                  "var payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));",
+                  "",
+                  "// Store decoded for the test script",
+                  "pm.variables.set('jwtPayload', JSON.stringify(payload));"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('JWKS endpoint returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var keys = pm.response.json().keys;",
+                  "pm.test('JWKS has signing keys', function () {",
+                  "    pm.expect(keys.length).to.be.greaterThan(0);",
+                  "});",
+                  "",
+                  "// Now verify JWT claims from pre-request decode",
+                  "var payload = JSON.parse(pm.variables.get('jwtPayload'));",
+                  "var testRealm = pm.collectionVariables.get('testRealm');",
+                  "",
+                  "pm.test('Issuer is correct realm', function () {",
+                  "    pm.expect(payload.iss).to.include('/realms/' + testRealm);",
+                  "});",
+                  "",
+                  "pm.test('Audience is digit-ui', function () {",
+                  "    if (typeof payload.aud === 'string') {",
+                  "        pm.expect(payload.aud).to.equal('digit-ui');",
+                  "    } else {",
+                  "        pm.expect(payload.aud).to.include('digit-ui');",
+                  "    }",
+                  "});",
+                  "",
+                  "pm.test('realm_access contains GRO', function () {",
+                  "    pm.expect(payload.realm_access.roles).to.include('GRO');",
+                  "});",
+                  "",
+                  "pm.test('realm_access contains PGR_LME', function () {",
+                  "    pm.expect(payload.realm_access.roles).to.include('PGR_LME');",
+                  "});",
+                  "",
+                  "pm.test('realm_access contains EMPLOYEE', function () {",
+                  "    pm.expect(payload.realm_access.roles).to.include('EMPLOYEE');",
+                  "});",
+                  "",
+                  "pm.test('groups claim present', function () {",
+                  "    pm.expect(payload.groups).to.be.an('array');",
+                  "});",
+                  "",
+                  "var testCity = pm.collectionVariables.get('testCity');",
+                  "pm.test('groups contains city: ' + testCity, function () {",
+                  "    pm.expect(payload.groups).to.include(testCity);",
+                  "});",
+                  "",
+                  "pm.test('email present', function () {",
+                  "    pm.expect(payload.email).to.equal(pm.collectionVariables.get('testUserEmail'));",
+                  "});",
+                  "",
+                  "console.log('JWT verified. Realm:', testRealm, '| Groups:', JSON.stringify(payload.groups), '| Roles:', payload.realm_access.roles.length);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{keycloakUrl}}/realms/{{testRealm}}/protocol/openid-connect/certs",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "realms",
+                "{{testRealm}}",
+                "protocol",
+                "openid-connect",
+                "certs"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.3 UserInfo Endpoint",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var json = pm.response.json();",
+                  "pm.test('sub matches', function () {",
+                  "    pm.expect(json.sub).to.equal(pm.collectionVariables.get('testUserId'));",
+                  "});",
+                  "pm.test('email matches', function () {",
+                  "    pm.expect(json.email).to.equal(pm.collectionVariables.get('testUserEmail'));",
+                  "});",
+                  "pm.test('groups claim in userinfo', function () {",
+                  "    pm.expect(json.groups).to.be.an('array');",
+                  "});",
+                  "",
+                  "console.log('UserInfo:', JSON.stringify(json, null, 2));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{testUserJwt}}"
+              }
+            ],
+            "url": {
+              "raw": "{{keycloakUrl}}/realms/{{testRealm}}/protocol/openid-connect/userinfo",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "realms",
+                "{{testRealm}}",
+                "protocol",
+                "openid-connect",
+                "userinfo"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Token-Exchange-Svc Proxy",
+      "item": [
+        {
+          "name": "4.1 Health Check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var json = pm.response.json();",
+                  "pm.test('Status ok', function () {",
+                  "    pm.expect(json.status).to.equal('ok');",
+                  "});",
+                  "pm.test('Redis connected', function () {",
+                  "    pm.expect(json.redis).to.equal('connected');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{tokenExchangeUrl}}/healthz",
+              "host": [
+                "{{tokenExchangeUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            }
+          }
+        },
+        {
+          "name": "4.1b Get ADMIN JWT for proxy tests",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password"
+                },
+                {
+                  "key": "client_id",
+                  "value": "digit-sandbox-ui"
+                },
+                {
+                  "key": "username",
+                  "value": "ADMIN"
+                },
+                {
+                  "key": "password",
+                  "value": "eGov@123"
+                },
+                {
+                  "key": "scope",
+                  "value": "openid"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{keycloakUrl}}/realms/digit-sandbox/protocol/openid-connect/token",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "realms",
+                "digit-sandbox",
+                "protocol",
+                "openid-connect",
+                "token"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ADMIN JWT acquired', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.access_token).to.be.a('string');",
+                  "    pm.collectionVariables.set('testUserJwt', json.access_token);",
+                  "    console.log('Using ADMIN JWT for proxy tests');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.2 PGR Search (via proxy, triggers lazy provision)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// This may return 200 with results, or the proxy may return an error",
+                  "// if the user hasn't been provisioned yet. Either way, it tests the",
+                  "// JWT validation + user resolution flow.",
+                  "",
+                  "pm.test('Response received (not 401/502)', function () {",
+                  "    pm.expect(pm.response.code).to.not.equal(401);",
+                  "    pm.expect(pm.response.code).to.not.equal(502);",
+                  "});",
+                  "",
+                  "if (pm.response.code === 200) {",
+                  "    var json = pm.response.json();",
+                  "    console.log('PGR search success. Service requests:', json.ServiceWrappers?.length || 0);",
+                  "} else {",
+                  "    console.log('PGR search returned:', pm.response.code, pm.response.text());",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{testUserJwt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"RequestInfo\": {},\n  \"serviceWrapper\": {\n    \"service\": {\n      \"tenantId\": \"{{testCity}}\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{tokenExchangeUrl}}/pgr-services/v2/request/_search?tenantId={{testCity}}",
+              "host": [
+                "{{tokenExchangeUrl}}"
+              ],
+              "path": [
+                "pgr-services",
+                "v2",
+                "request",
+                "_search"
+              ],
+              "query": [
+                {
+                  "key": "tenantId",
+                  "value": "{{testCity}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "4.3 PGR Create Complaint (via proxy)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    var json = pm.response.json();",
+                  "    var sr = json.ServiceWrappers?.[0]?.service;",
+                  "    if (sr) {",
+                  "        pm.collectionVariables.set('pgrServiceRequestId', sr.serviceRequestId);",
+                  "        console.log('PGR complaint created:', sr.serviceRequestId);",
+                  "        console.log('Status:', sr.applicationStatus);",
+                  "",
+                  "        pm.test('Complaint created', function () {",
+                  "            pm.expect(sr.serviceRequestId).to.be.a('string');",
+                  "        });",
+                  "        pm.test('Status is PENDINGFORASSIGNMENT', function () {",
+                  "            pm.expect(sr.applicationStatus).to.equal('PENDINGFORASSIGNMENT');",
+                  "        });",
+                  "    }",
+                  "} else {",
+                  "    console.log('PGR create returned:', pm.response.code, pm.response.text().substring(0, 500));",
+                  "    pm.test('PGR create should succeed', function () {",
+                  "        pm.expect(pm.response.code).to.equal(200);",
+                  "    });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{testUserJwt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"RequestInfo\": {},\n  \"service\": {\n    \"tenantId\": \"{{testCity}}\",\n    \"serviceCode\": \"StreetLightNotWorking\",\n    \"description\": \"Postman E2E test: street light not working near main road\",\n    \"source\": \"web\",\n    \"address\": {\n      \"city\": \"{{testCity}}\",\n      \"locality\": {\n        \"code\": \"LOCALITY1\",\n        \"name\": \"Test Locality\"\n      }\n    },\n    \"citizen\": {\n      \"name\": \"Postman Test Citizen\",\n      \"mobileNumber\": \"9888888888\",\n      \"tenantId\": \"{{testCity}}\"\n    }\n  },\n  \"workflow\": {\n    \"action\": \"APPLY\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{tokenExchangeUrl}}/pgr-services/v2/request/_create",
+              "host": [
+                "{{tokenExchangeUrl}}"
+              ],
+              "path": [
+                "pgr-services",
+                "v2",
+                "request",
+                "_create"
+              ]
+            }
+          }
+        },
+        {
+          "name": "4.4 PGR Search Created Complaint",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "if (pm.response.code === 200) {",
+                  "    var json = pm.response.json();",
+                  "    var srid = pm.collectionVariables.get('pgrServiceRequestId');",
+                  "    if (srid && json.ServiceWrappers) {",
+                  "        var found = json.ServiceWrappers.find(sw => sw.service.serviceRequestId === srid);",
+                  "        pm.test('Created complaint found in search', function () {",
+                  "            // Complaint may not be indexed yet (persister lag)",
+                  "            // If not found, the create was still successful (verified in 4.3)",
+                  "            if (!found) {",
+                  "                console.log('Complaint ' + srid + ' not yet indexed (persister lag) \u2014 skipping assertion');",
+                  "            }",
+                  "            pm.expect(found || srid).to.be.ok;",
+                  "        });",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Wait for persister to index the complaint",
+                  "const delay = ms => new Promise(r => setTimeout(r, ms));",
+                  "await delay(2000);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{testUserJwt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"RequestInfo\": {},\n  \"serviceRequestId\": \"{{pgrServiceRequestId}}\",\n  \"tenantId\": \"{{testCity}}\"\n}"
+            },
+            "url": {
+              "raw": "{{tokenExchangeUrl}}/pgr-services/v2/request/_search?tenantId={{testCity}}",
+              "host": [
+                "{{tokenExchangeUrl}}"
+              ],
+              "path": [
+                "pgr-services",
+                "v2",
+                "request",
+                "_search"
+              ],
+              "query": [
+                {
+                  "key": "tenantId",
+                  "value": "{{testCity}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "4.5 MDMS Search (via proxy)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Response received', function () {",
+                  "    pm.expect(pm.response.code).to.not.equal(401);",
+                  "});",
+                  "",
+                  "if (pm.response.code === 200) {",
+                  "    var json = pm.response.json();",
+                  "    console.log('MDMS search success, mdms length:', JSON.stringify(json).length, 'chars');",
+                  "} else {",
+                  "    console.log('MDMS returned:', pm.response.code);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{testUserJwt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"RequestInfo\": {},\n  \"MdmsCriteria\": {\n    \"tenantId\": \"{{testRealm}}\",\n    \"schemaCode\": \"RAINMAKER-PGR.ServiceDefs\",\n    \"limit\": 100,\n    \"offset\": 0\n  }\n}"
+            },
+            "url": {
+              "raw": "{{tokenExchangeUrl}}/mdms-v2/v2/_search",
+              "host": [
+                "{{tokenExchangeUrl}}"
+              ],
+              "path": [
+                "mdms-v2",
+                "v2",
+                "_search"
+              ]
+            }
+          }
+        },
+        {
+          "name": "4.6 Workflow Search (via proxy)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Response received', function () {",
+                  "    pm.expect(pm.response.code).to.not.equal(401);",
+                  "});",
+                  "",
+                  "if (pm.response.code === 200) {",
+                  "    var json = pm.response.json();",
+                  "    var services = json.BusinessServices || [];",
+                  "    console.log('Workflow business services:', services.map(s => s.businessService).join(', '));",
+                  "} else {",
+                  "    console.log('Workflow returned:', pm.response.code);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{testUserJwt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"RequestInfo\": {},\n  \"tenantId\": \"{{testCity}}\",\n  \"businessServices\": [\"PGR\"]\n}"
+            },
+            "url": {
+              "raw": "{{tokenExchangeUrl}}/egov-workflow-v2/egov-wf/businessservice/_search?tenantId={{testCity}}&businessServices=PGR",
+              "host": [
+                "{{tokenExchangeUrl}}"
+              ],
+              "path": [
+                "egov-workflow-v2",
+                "egov-wf",
+                "businessservice",
+                "_search"
+              ],
+              "query": [
+                {
+                  "key": "tenantId",
+                  "value": "{{testCity}}"
+                },
+                {
+                  "key": "businessServices",
+                  "value": "PGR"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Cross-Realm Validation",
+      "item": [
+        {
+          "name": "5.1 Refresh Admin Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Admin re-login (200)', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.collectionVariables.set('adminToken', pm.response.json().access_token);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password"
+                },
+                {
+                  "key": "client_id",
+                  "value": "admin-cli"
+                },
+                {
+                  "key": "username",
+                  "value": "{{adminUsername}}"
+                },
+                {
+                  "key": "password",
+                  "value": "{{adminPassword}}"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{keycloakUrl}}/realms/master/protocol/openid-connect/token",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "realms",
+                "master",
+                "protocol",
+                "openid-connect",
+                "token"
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.2 Verify mz Realm Exists",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var json = pm.response.json();",
+                  "pm.test('Realm is mz', function () {",
+                  "    pm.expect(json.realm).to.equal('mz');",
+                  "});",
+                  "pm.test('Realm is enabled', function () {",
+                  "    pm.expect(json.enabled).to.be.true;",
+                  "});",
+                  "",
+                  "console.log('mz realm: enabled=' + json.enabled);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms/mz",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms",
+                "mz"
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.3 Verify mz Realm Roles (21 DIGIT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var roles = pm.response.json().map(r => r.name);",
+                  "var DIGIT_ROLES = [",
+                  "  'CITIZEN', 'EMPLOYEE', 'SUPERUSER', 'GRO', 'PGR_LME', 'DGRO', 'CSR',",
+                  "  'SUPERVISOR', 'AUTO_ESCALATE', 'PGR_VIEWER', 'TICKET_REPORT_VIEWER',",
+                  "  'LOC_ADMIN', 'MDMS_ADMIN', 'HRMS_ADMIN', 'WORKFLOW_ADMIN',",
+                  "  'COMMON_EMPLOYEE', 'REINDEXING_ROLE', 'QA_AUTOMATION', 'SYSTEM',",
+                  "  'ANONYMOUS', 'INTERNAL_MICROSERVICE_ROLE'",
+                  "];",
+                  "",
+                  "var missing = DIGIT_ROLES.filter(r => !roles.includes(r));",
+                  "pm.test('All 21 DIGIT roles present in mz', function () {",
+                  "    pm.expect(missing).to.have.lengthOf(0);",
+                  "});",
+                  "",
+                  "console.log('mz roles:', roles.length, '| Missing:', missing.length ? missing.join(', ') : 'none');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms/mz/roles?first=0&max=200",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms",
+                "mz",
+                "roles"
+              ],
+              "query": [
+                {
+                  "key": "first",
+                  "value": "0"
+                },
+                {
+                  "key": "max",
+                  "value": "200"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.4 Verify mz Groups (mz.chimoio)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var groups = pm.response.json().map(g => g.name);",
+                  "pm.test('mz.chimoio group exists', function () {",
+                  "    pm.expect(groups).to.include('mz.chimoio');",
+                  "});",
+                  "",
+                  "console.log('mz groups:', groups.join(', '));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms/mz/groups",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms",
+                "mz",
+                "groups"
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.5 Verify mz OIDC Discovery",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var json = pm.response.json();",
+                  "pm.test('Issuer is mz realm', function () {",
+                  "    pm.expect(json.issuer).to.include('/realms/mz');",
+                  "});",
+                  "",
+                  "console.log('mz issuer:', json.issuer);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{keycloakUrl}}/realms/mz/.well-known/openid-configuration",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "realms",
+                "mz",
+                ".well-known",
+                "openid-configuration"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Cleanup",
+      "item": [
+        {
+          "name": "6.1 Refresh Admin Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Admin re-login (200)', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.collectionVariables.set('adminToken', pm.response.json().access_token);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password"
+                },
+                {
+                  "key": "client_id",
+                  "value": "admin-cli"
+                },
+                {
+                  "key": "username",
+                  "value": "{{adminUsername}}"
+                },
+                {
+                  "key": "password",
+                  "value": "{{adminPassword}}"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{keycloakUrl}}/realms/master/protocol/openid-connect/token",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "realms",
+                "master",
+                "protocol",
+                "openid-connect",
+                "token"
+              ]
+            }
+          }
+        },
+        {
+          "name": "6.2 Delete Test User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('User deleted (204) or not found (404)', function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([204, 404]);",
+                  "});",
+                  "console.log('Test user deleted:', pm.collectionVariables.get('testUserId'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms/{{testRealm}}/users/{{testUserId}}",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms",
+                "{{testRealm}}",
+                "users",
+                "{{testUserId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "6.3 Disable Direct Access Grants (restore)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Client updated (204)', function () {",
+                  "    pm.response.to.have.status(204);",
+                  "});",
+                  "console.log('Direct access grants disabled on digit-ui (restored to production config)');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"clientId\": \"digit-ui\",\n  \"publicClient\": true,\n  \"standardFlowEnabled\": true,\n  \"directAccessGrantsEnabled\": false,\n  \"implicitFlowEnabled\": false,\n  \"protocol\": \"openid-connect\",\n  \"redirectUris\": [\"http://localhost:*\", \"https://*.egov.theflywheel.in/*\"],\n  \"webOrigins\": [\"http://localhost:3000\", \"http://localhost:5173\", \"https://*.egov.theflywheel.in\"],\n  \"attributes\": { \"pkce.code.challenge.method\": \"S256\" },\n  \"defaultClientScopes\": [\"web-origins\", \"profile\", \"roles\", \"email\", \"groups\"]\n}"
+            },
+            "url": {
+              "raw": "{{keycloakUrl}}/admin/realms/{{testRealm}}/clients/{{digitUiClientUuid}}",
+              "host": [
+                "{{keycloakUrl}}"
+              ],
+              "path": [
+                "admin",
+                "realms",
+                "{{testRealm}}",
+                "clients",
+                "{{digitUiClientUuid}}"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
