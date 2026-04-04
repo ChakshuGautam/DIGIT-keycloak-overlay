@@ -237,4 +237,88 @@ describe("KcAdminService", () => {
     expect(groups.length).toBe(1);
     expect(groups[0].name).toBe("pg.citya");
   });
+
+  // ── v1 gap: syncTenantRealms ─────────────────────────────────────────────
+
+  it("syncTenantRealms creates realms from DIGIT_TENANTS config", async () => {
+    // Acquire token
+    fetchSpy.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ access_token: "test-token" }),
+    });
+    await service.initWithRetry(1, 10);
+
+    // Override config to return tenants
+    const origGet = mockConfigService.get;
+    const getOverride = (key: string) => {
+      if (key === "DIGIT_TENANTS") return "pg:pg.citya,pg.cityb;mz:mz.chimoio";
+      return origGet(key);
+    };
+    (mockConfigService as any).get = getOverride;
+
+    // Mock realm creation for pg (201 success)
+    fetchSpy.mockResolvedValueOnce({ ok: true, status: 201 });
+    // Mock realm creation for mz (201 success)
+    fetchSpy.mockResolvedValueOnce({ ok: true, status: 201 });
+
+    await expect(service.syncTenantRealms()).resolves.not.toThrow();
+
+    // Verify createRealm was called (POST to /admin/realms)
+    const realmCreationCalls = fetchSpy.mock.calls.filter(
+      ([url]: [string]) => typeof url === "string" && url.endsWith("/admin/realms"),
+    );
+    expect(realmCreationCalls.length).toBe(2);
+
+    // Restore
+    (mockConfigService as any).get = origGet;
+  });
+
+  it("syncTenantRealms skips when no admin token", async () => {
+    // Do NOT acquire token — hasAdminToken() returns false
+    const origGet = mockConfigService.get;
+    const getOverride = (key: string) => {
+      if (key === "DIGIT_TENANTS") return "pg:pg.citya";
+      return origGet(key);
+    };
+    (mockConfigService as any).get = getOverride;
+
+    // Should not throw and should not make fetch calls for realm creation
+    const callsBefore = fetchSpy.mock.calls.length;
+    await service.syncTenantRealms();
+    expect(fetchSpy.mock.calls.length).toBe(callsBefore);
+
+    (mockConfigService as any).get = origGet;
+  });
+
+  it("syncTenantRealms is idempotent (handles 409)", async () => {
+    fetchSpy.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ access_token: "test-token" }),
+    });
+    await service.initWithRetry(1, 10);
+
+    const origGet = mockConfigService.get;
+    const getOverride = (key: string) => {
+      if (key === "DIGIT_TENANTS") return "pg:pg.citya";
+      return origGet(key);
+    };
+    (mockConfigService as any).get = getOverride;
+
+    // First call: 409 conflict, then GET groups returns existing
+    fetchSpy
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        text: () => Promise.resolve("Conflict"),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve([{ id: "g1", name: "pg.citya", path: "/pg.citya" }]),
+      });
+
+    await expect(service.syncTenantRealms()).resolves.not.toThrow();
+
+    (mockConfigService as any).get = origGet;
+  });
 });

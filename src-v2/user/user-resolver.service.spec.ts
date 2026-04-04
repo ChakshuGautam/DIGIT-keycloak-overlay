@@ -294,4 +294,67 @@ describe("UserResolverService", () => {
     expect(mockDigit.getUserToken).toHaveBeenCalledTimes(3);
     expect(mockDigit.getSystemPassword).toHaveBeenCalled();
   });
+
+  // ── v1 gap: same root tenant shares user, different root creates separate ──
+
+  it("same root tenant resolves to same user via search", async () => {
+    // pg.citya and pg.cityb both resolve to root "pg"
+    mockCache.get.mockResolvedValue(null);
+    mockDigit.searchUser.mockResolvedValue(null);
+
+    const result1 = await service.resolve(claims, "pg.citya");
+    expect(result1.user.uuid).toBe("digit-uuid-1");
+
+    // On second call for pg.cityb, user already exists from first call
+    vi.clearAllMocks();
+    mockCache.get.mockResolvedValue(null);
+    mockCache.isStale.mockReturnValue(false);
+    mockDigit.searchUser.mockResolvedValue(digitUser); // found by search
+    mockDigit.getUserToken.mockResolvedValue({ token: "digit-token-2", expiresIn: 86400000 });
+    mockDigit.namespacedUserName.mockImplementation((r: string, e: string) => `${r}:${e}`);
+    mockDigit.resolveUserType.mockReturnValue("CITIZEN");
+
+    const result2 = await service.resolve(claims, "pg.cityb");
+    expect(result2.user.uuid).toBe("digit-uuid-1");
+
+    // Both searched with root tenant "pg"
+    expect(mockDigit.searchUser).toHaveBeenCalledWith("pg:alice@example.com", "pg");
+    expect(mockDigit.createUser).not.toHaveBeenCalled();
+  });
+
+  it("different root tenants create separate DIGIT users", async () => {
+    mockCache.get.mockResolvedValue(null);
+    mockDigit.searchUser.mockResolvedValue(null);
+
+    const pgUser = { ...digitUser, uuid: "pg-uuid" };
+    mockDigit.createUser.mockResolvedValue(pgUser);
+
+    const result1 = await service.resolve(claims, "pg.citya");
+    expect(result1.user.uuid).toBe("pg-uuid");
+
+    // Second call with different root tenant "statea"
+    vi.clearAllMocks();
+    mockCache.get.mockResolvedValue(null);
+    mockCache.isStale.mockReturnValue(false);
+    mockDigit.searchUser.mockResolvedValue(null);
+    mockDigit.namespacedUserName.mockImplementation((r: string, e: string) => `${r}:${e}`);
+    mockDigit.resolveUserType.mockReturnValue("CITIZEN");
+    mockDigit.generateRandomPassword.mockReturnValue("KcRandom123@1");
+    mockDigit.getUserToken.mockResolvedValue({ token: "digit-token-3", expiresIn: 86400000 });
+    mockDigit.generateV1Password.mockReturnValue("Kcabcdef@1");
+    mockDigit.getSystemPassword.mockReturnValue("eGov@123");
+
+    const stateaUser = { ...digitUser, uuid: "statea-uuid", tenantId: "statea" };
+    mockDigit.createUser.mockResolvedValue(stateaUser);
+
+    const stateaClaims = { ...claims, realm: "statea" };
+    const result2 = await service.resolve(stateaClaims, "statea.cityb");
+    expect(result2.user.uuid).toBe("statea-uuid");
+
+    // Verify different root tenants used
+    expect(mockDigit.searchUser).toHaveBeenCalledWith(
+      "statea:alice@example.com",
+      "statea",
+    );
+  });
 });

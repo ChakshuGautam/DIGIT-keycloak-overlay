@@ -212,4 +212,122 @@ describe("DigitClientService", () => {
       service.getUserToken("bad@test.com", "wrong", "pg", "CITIZEN"),
     ).rejects.toThrow("401");
   });
+
+  // ── v1 gap: role merging on createUser ────────────────────────────────────
+
+  it("auto-adds CITIZEN role when no roles provided to createUser", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        user: [
+          {
+            uuid: "u-role-1",
+            userName: "pg:role@test.com",
+            name: "Role Test",
+            emailId: "role@test.com",
+            mobileNumber: "9000012345",
+            tenantId: "pg",
+            type: "CITIZEN",
+            roles: [{ code: "CITIZEN", name: "Citizen", tenantId: "pg" }],
+          },
+        ],
+      }),
+    });
+
+    await service.createUser({
+      userName: "pg:role@test.com",
+      name: "Role Test",
+      email: "role@test.com",
+      mobileNumber: "9000012345",
+      tenantId: "pg",
+      password: "KcRandom123@1",
+      type: "CITIZEN",
+      // no roles provided
+    });
+
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.user.roles).toEqual([
+      { code: "CITIZEN", name: "Citizen", tenantId: "pg" },
+    ]);
+  });
+
+  it("uses provided roles when passed to createUser", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        user: [
+          {
+            uuid: "u-role-2",
+            userName: "pg:emp@test.com",
+            name: "Employee",
+            emailId: "emp@test.com",
+            mobileNumber: "9000012345",
+            tenantId: "pg",
+            type: "EMPLOYEE",
+            roles: [
+              { code: "EMPLOYEE", name: "Employee", tenantId: "pg" },
+              { code: "CITIZEN", name: "Citizen", tenantId: "pg" },
+            ],
+          },
+        ],
+      }),
+    });
+
+    await service.createUser({
+      userName: "pg:emp@test.com",
+      name: "Employee",
+      email: "emp@test.com",
+      mobileNumber: "9000012345",
+      tenantId: "pg",
+      password: "KcRandom123@1",
+      type: "EMPLOYEE",
+      roles: [
+        { code: "EMPLOYEE", name: "Employee", tenantId: "pg" },
+        { code: "CITIZEN", name: "Citizen", tenantId: "pg" },
+      ],
+    });
+
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    const roleCodes = body.user.roles.map((r: any) => r.code);
+    expect(roleCodes).toContain("EMPLOYEE");
+    expect(roleCodes).toContain("CITIZEN");
+  });
+
+  it("updateUserRoles auto-adds CITIZEN when not provided", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ user: [{ uuid: "u1" }] }),
+    });
+
+    await service.updateUserRoles("u1", "pg", [
+      { code: "GRO", name: "GRO" },
+    ]);
+
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    const roleCodes = body.user.roles.map((r: any) => r.code);
+    expect(roleCodes).toContain("GRO");
+    expect(roleCodes).toContain("CITIZEN");
+  });
+
+  it("updateUserRoles does not duplicate CITIZEN when already provided", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ user: [{ uuid: "u1" }] }),
+    });
+
+    await service.updateUserRoles("u1", "pg", [
+      { code: "CITIZEN", name: "Citizen" },
+      { code: "GRO", name: "GRO" },
+    ]);
+
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    const citizenCount = body.user.roles.filter(
+      (r: any) => r.code === "CITIZEN",
+    ).length;
+    expect(citizenCount).toBe(1);
+  });
 });
