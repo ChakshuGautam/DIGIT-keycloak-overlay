@@ -129,6 +129,17 @@ export class ProxyController {
         body.RequestInfo.authToken = citizenToken;
         body.RequestInfo.userInfo = digitUser;
 
+        // Inject search criteria for endpoints that need it from userInfo
+        const effectiveUrl = url || req.url;
+        if (effectiveUrl.includes('/user/_search') && !body.uuid && !body.userName) {
+          body.uuid = [digitUser.uuid];
+          body.tenantId = digitUser.tenantId;
+        }
+        if (effectiveUrl.includes('/egov-user-event/') && !body.userIds) {
+          // egov-user-event needs userIds for notification lookup
+          body.userIds = [digitUser.uuid];
+        }
+
         const upstreamResp = await fetch(upstreamUrl, {
           method: req.method,
           headers: { "Content-Type": "application/json" },
