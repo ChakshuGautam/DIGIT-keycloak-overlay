@@ -312,6 +312,79 @@ describe("DigitClientService", () => {
     expect(roleCodes).toContain("CITIZEN");
   });
 
+  // ── HRMS fix: null userName guard in createUser ─────────────────────────
+
+  it("rejects createUser when userName is null", async () => {
+    await expect(
+      service.createUser({
+        userName: null as unknown as string,
+        name: "Bad",
+        email: "bad@test.com",
+        tenantId: "pg",
+        password: "KcRandom123@1",
+        type: "CITIZEN",
+      }),
+    ).rejects.toThrow("userName is null or empty");
+  });
+
+  it("rejects createUser when userName is empty string", async () => {
+    await expect(
+      service.createUser({
+        userName: "",
+        name: "Bad",
+        email: "bad@test.com",
+        tenantId: "pg",
+        password: "KcRandom123@1",
+        type: "CITIZEN",
+      }),
+    ).rejects.toThrow("userName is null or empty");
+  });
+
+  it('rejects createUser when userName is literal "null"', async () => {
+    await expect(
+      service.createUser({
+        userName: "null",
+        name: "Bad",
+        email: "bad@test.com",
+        tenantId: "pg",
+        password: "KcRandom123@1",
+        type: "CITIZEN",
+      }),
+    ).rejects.toThrow("userName is null or empty");
+  });
+
+  it("rejects createUser when userName is whitespace-only", async () => {
+    await expect(
+      service.createUser({
+        userName: "   ",
+        name: "Bad",
+        email: "bad@test.com",
+        tenantId: "pg",
+        password: "KcRandom123@1",
+        type: "CITIZEN",
+      }),
+    ).rejects.toThrow("userName is null or empty");
+  });
+
+  it("does not call fetch when userName is invalid", async () => {
+    const fetchSpy = vi.fn();
+    global.fetch = fetchSpy;
+
+    await service
+      .createUser({
+        userName: "null",
+        name: "Bad",
+        email: "bad@test.com",
+        tenantId: "pg",
+        password: "KcRandom123@1",
+        type: "CITIZEN",
+      })
+      .catch(() => {});
+
+    // fetch should NOT have been called — guard rejects before any HTTP
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("updateUserRoles does not duplicate CITIZEN when already provided", async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,

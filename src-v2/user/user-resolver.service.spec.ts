@@ -64,6 +64,7 @@ describe("UserResolverService", () => {
     mockDigit.createUser.mockResolvedValue(digitUser);
     mockDigit.getUserToken.mockResolvedValue({ token: "digit-token", expiresIn: 86400000 });
     mockDigit.resolveUserType.mockReturnValue("CITIZEN");
+    mockDigit.namespacedUserName.mockImplementation((r: string, e: string) => `${r}:${e}`);
 
     service = new UserResolverService(
       mockCache as unknown as CacheService,
@@ -293,6 +294,45 @@ describe("UserResolverService", () => {
     expect(result.token).toBe("sys-token");
     expect(mockDigit.getUserToken).toHaveBeenCalledTimes(3);
     expect(mockDigit.getSystemPassword).toHaveBeenCalled();
+  });
+
+  // ── HRMS fix: null userName guard in resolver ──────────────────────────────
+
+  it("throws when claims produce null userName", async () => {
+    mockCache.get.mockResolvedValue(null);
+    mockDigit.searchUser.mockResolvedValue(null);
+    // namespacedUserName returns "null" when email is undefined/null
+    mockDigit.namespacedUserName.mockReturnValue("null");
+
+    const badClaims: JwtClaims = {
+      sub: "kc-bad-1",
+      email: null as unknown as string,
+      realm: "pg",
+      roles: [],
+    };
+
+    await expect(service.resolve(badClaims, "pg.citya")).rejects.toThrow(
+      "userName is empty",
+    );
+    expect(mockDigit.createUser).not.toHaveBeenCalled();
+  });
+
+  it("throws when claims produce empty userName", async () => {
+    mockCache.get.mockResolvedValue(null);
+    mockDigit.searchUser.mockResolvedValue(null);
+    mockDigit.namespacedUserName.mockReturnValue("");
+
+    const badClaims: JwtClaims = {
+      sub: "kc-bad-2",
+      email: "" as string,
+      realm: "",
+      roles: [],
+    };
+
+    await expect(service.resolve(badClaims, "pg.citya")).rejects.toThrow(
+      "userName is empty",
+    );
+    expect(mockDigit.createUser).not.toHaveBeenCalled();
   });
 
   // ── v1 gap: same root tenant shares user, different root creates separate ──
