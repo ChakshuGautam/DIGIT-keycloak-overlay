@@ -132,25 +132,31 @@ export class DigitClientService implements OnModuleInit {
         tenantId: params.tenantId,
         password: params.password,
         type: params.type,
-        roles: params.roles || [
-          { code: "CITIZEN", name: "Citizen", tenantId: params.tenantId },
-        ],
+        roles: params.roles && params.roles.length > 0
+          ? params.roles
+          : [{ code: "CITIZEN", name: "Citizen", tenantId: params.tenantId }],
         active: true,
       },
     };
 
+    this.logger.log(`createUser: ${JSON.stringify(body.user, null, 0).substring(0, 200)}`);
     try {
       return await this.postToDigit<DigitUser>(url, body, "user");
     } catch (err: any) {
-      // Mobile collision retry: if 400 with "mobile" in message, retry with seed=1
-      if (
-        err.message &&
-        err.message.includes("400") &&
-        err.message.toLowerCase().includes("mobile")
-      ) {
-        const newMobile = this.generateMobileNumber(params.userName, 1);
+      // Retry on 400 — likely mobile number collision or other constraint violation
+      // egov-user returns generic "InvalidUserCreateException" without details
+      if (err.message && err.message.includes("400")) {
+        this.logger.warn(`User create failed (400), retrying with different mobile: ${err.message.substring(0, 100)}`);
+        const newMobile = this.generateMobileNumber(params.keycloakSub || params.userName, 1);
         body.user.mobileNumber = newMobile;
-        return this.postToDigit<DigitUser>(url, body, "user");
+        try {
+          return await this.postToDigit<DigitUser>(url, body, "user");
+        } catch (retryErr: any) {
+          // Second retry with seed=2
+          this.logger.warn(`Retry also failed, trying seed=2`);
+          body.user.mobileNumber = this.generateMobileNumber(params.keycloakSub || params.userName, 2);
+          return this.postToDigit<DigitUser>(url, body, "user");
+        }
       }
       throw err;
     }
@@ -296,10 +302,15 @@ export class DigitClientService implements OnModuleInit {
       const timeout = setTimeout(() => controller.abort(), 10_000);
 
       try {
+        const jsonBody = JSON.stringify(body);
+        if (url.includes("_createnovalidate")) {
+          this.logger.log(`[DEBUG] POST ${url} body length=${jsonBody.length}`);
+          this.logger.log(`[DEBUG] body: ${jsonBody.substring(0, 500)}`);
+        }
         const res = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: jsonBody,
           signal: controller.signal,
         });
 
