@@ -34,15 +34,22 @@ export class ProxyController {
 
   @All("*")
   async handleAll(@Req() req: FastifyRequest, @Res() res: FastifyReply): Promise<void> {
-    // Fix HRMS / boundary-service search NPE: add default offset/limit if missing
+    // Fix HRMS / boundary-service search NPE: add default offset/limit and tenantId if missing
+    let requestUrl = req.url;
     if (
-      (req.url.includes('/egov-hrms/') || req.url.includes('/boundary-service/')) &&
-      (req.url.includes('_search') || req.url.includes('_count'))
+      (requestUrl.includes('/egov-hrms/') || requestUrl.includes('/boundary-service/')) &&
+      (requestUrl.includes('_search') || requestUrl.includes('_count'))
     ) {
-      const url = new URL(req.url, 'http://localhost');
+      const url = new URL(requestUrl, 'http://localhost');
       if (!url.searchParams.has('offset')) url.searchParams.set('offset', '0');
       if (!url.searchParams.has('limit')) url.searchParams.set('limit', '100');
-      req.url = url.pathname + url.search;
+      // HRMS requires tenantId as query param — extract from body if missing
+      if (!url.searchParams.has('tenantId')) {
+        const body = (req.body as any) || {};
+        const tenantId = body.criteria?.tenantId || body.tenantId || this.defaultTenant;
+        url.searchParams.set('tenantId', tenantId);
+      }
+      requestUrl = url.pathname + url.search;
     }
 
     // CORS
@@ -63,7 +70,7 @@ export class ProxyController {
     }
 
     const method = req.method;
-    const path = req.url; // includes query string
+    const path = requestUrl; // includes query string (may have HRMS offset/limit added)
     const body = (req.body as any) || {};
 
     // Try Authorization header, then RequestInfo.authToken
@@ -77,7 +84,7 @@ export class ProxyController {
     if (!claims) {
       // No KC JWT — forward to gateway unchanged (like v1's forwardToGateway)
       this.metrics.jwtValidationTotal.inc({ result: "missing" });
-      await this.forwardToGateway(req, res);
+      await this.forwardToGateway(req, res, requestUrl);
       return;
     }
 
@@ -92,7 +99,7 @@ export class ProxyController {
     try {
       const { user, token } = await this.userResolver.resolve(claims, tenantId);
       // Proxy to gateway with rewritten RequestInfo (matching v1 exactly)
-      await this.proxyRequest(req, res, user, token);
+      await this.proxyRequest(req, res, user, token, requestUrl);
     } catch (err) {
       this.logger.error(`Proxy error: ${(err as Error).message}`);
       res.status(500).send({ error: "Internal error", message: "Failed to resolve user" });
@@ -109,8 +116,9 @@ export class ProxyController {
     res: FastifyReply,
     digitUser: DigitUser,
     citizenToken: string,
+    url?: string,
   ): Promise<void> {
-    const upstreamUrl = `${this.gatewayUrl}${req.url}`;
+    const upstreamUrl = `${this.gatewayUrl}${url || req.url}`;
     const contentType = (req.headers["content-type"] as string) || "";
 
     try {
@@ -271,13 +279,14 @@ export class ProxyController {
   /**
    * Forward unchanged to gateway — matches v1's forwardToGateway() exactly.
    */
-  private async forwardToGateway(req: FastifyRequest, res: FastifyReply): Promise<void> {
+  private async forwardToGateway(req: FastifyRequest, res: FastifyReply, url?: string): Promise<void> {
     // KC OIDC endpoints should go to Keycloak, not Kong
     const kcUrl = this.config.get<string>("KEYCLOAK_INTERNAL_URL") || "http://keycloak:8080";
-    const isKcPath = req.url.startsWith("/realms/");
+    const effectiveUrl = url || req.url;
+    const isKcPath = effectiveUrl.startsWith("/realms/");
     const upstreamUrl = isKcPath
-      ? `${kcUrl}${req.url}`
-      : `${this.gatewayUrl}${req.url}`;
+      ? `${kcUrl}${effectiveUrl}`
+      : `${this.gatewayUrl}${effectiveUrl}`;
 
     try {
       const headers: Record<string, string> = {};
