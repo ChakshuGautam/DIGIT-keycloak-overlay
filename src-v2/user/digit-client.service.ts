@@ -117,6 +117,12 @@ export class DigitClientService implements OnModuleInit {
     type: string;
     roles?: Array<{ code: string; name: string; tenantId?: string }>;
   }): Promise<DigitUser> {
+    // Defensive guard: reject null/empty userName before hitting _createnovalidate
+    if (!params.userName || params.userName === 'null' || params.userName.trim() === '') {
+      this.logger.error(`createUser called with invalid userName: "${params.userName}"`);
+      throw new Error('Cannot create user: userName is null or empty');
+    }
+
     const host = this.config.get<string>("DIGIT_USER_HOST");
     const url = `${host}/user/users/_createnovalidate`;
 

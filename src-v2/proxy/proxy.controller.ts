@@ -11,6 +11,7 @@ import { JwtService } from "../auth/jwt.service";
 import { UserResolverService } from "../user/user-resolver.service";
 import { CacheService } from "../cache/cache.service";
 import { MetricsService } from "../metrics/metrics.service";
+import { KcAdminService } from "../keycloak/kc-admin.service";
 import type { DigitUser } from "../types";
 
 @Controller()
@@ -25,6 +26,7 @@ export class ProxyController {
     private readonly cache: CacheService,
     private readonly metrics: MetricsService,
     private readonly config: ConfigService,
+    private readonly kcAdmin: KcAdminService,
   ) {
     this.gatewayUrl = this.config.get<string>("DIGIT_GATEWAY_HOST") ?? "http://kong-gateway:8000";
     this.defaultTenant = this.config.get<string>("DIGIT_DEFAULT_TENANT") ?? "pg.citya";
@@ -32,6 +34,17 @@ export class ProxyController {
 
   @All("*")
   async handleAll(@Req() req: FastifyRequest, @Res() res: FastifyReply): Promise<void> {
+    // Fix HRMS / boundary-service search NPE: add default offset/limit if missing
+    if (
+      (req.url.includes('/egov-hrms/') || req.url.includes('/boundary-service/')) &&
+      (req.url.includes('_search') || req.url.includes('_count'))
+    ) {
+      const url = new URL(req.url, 'http://localhost');
+      if (!url.searchParams.has('offset')) url.searchParams.set('offset', '0');
+      if (!url.searchParams.has('limit')) url.searchParams.set('limit', '100');
+      req.url = url.pathname + url.search;
+    }
+
     // CORS
     const origin = req.headers["origin"] as string;
     const allowedOrigins = this.config.get<string>("CORS_ALLOWED_ORIGINS");
@@ -114,10 +127,28 @@ export class ProxyController {
           body: JSON.stringify(body),
         });
 
+        const responseBody = await upstreamResp.text();
+
+        // After successful HRMS employee creation, sync user to Keycloak
+        if (req.url.includes('/egov-hrms/employees/_create') && upstreamResp.status === 200) {
+          try {
+            const data = JSON.parse(responseBody);
+            const employees = data.Employees || [];
+            for (const emp of employees) {
+              const user = emp.user;
+              if (user && user.emailId && this.kcAdmin.hasAdminToken()) {
+                this.createKcUserForEmployee(user).catch(err =>
+                  this.logger.warn(`KC user sync failed for ${user.emailId}: ${(err as Error).message}`),
+                );
+              }
+            }
+          } catch { /* ignore parse errors */ }
+        }
+
         res.status(upstreamResp.status);
         const ct = upstreamResp.headers.get("content-type");
         if (ct) res.header("Content-Type", ct);
-        res.send(await upstreamResp.text());
+        res.send(responseBody);
       } else if (contentType.includes("multipart/form-data")) {
         // Multipart: pass token via query param
         const url = new URL(upstreamUrl);
@@ -163,6 +194,77 @@ export class ProxyController {
     } catch (err) {
       this.logger.error(`Upstream error: ${(err as Error).message}`);
       res.status(502).send({ error: "Bad gateway", details: String(err) });
+    }
+  }
+
+  /**
+   * Create a Keycloak user corresponding to an HRMS-created DIGIT employee.
+   * Fire-and-forget: failures are logged but do not block the response.
+   */
+  private async createKcUserForEmployee(user: {
+    emailId: string;
+    name?: string;
+    userName?: string;
+    roles?: Array<{ code: string; name: string }>;
+  }): Promise<void> {
+    const realm = this.config.get<string>("KEYCLOAK_USER_REALM");
+    if (!realm) {
+      this.logger.warn("KEYCLOAK_USER_REALM not configured — skipping KC user sync");
+      return;
+    }
+
+    const kcAdminUrl = this.config.get<string>("KEYCLOAK_ADMIN_URL") || "http://localhost:8180";
+    const token = this.kcAdmin.getAdminToken();
+
+    // Create user in KC
+    const kcUser = {
+      username: user.emailId,
+      email: user.emailId,
+      firstName: user.name?.split(" ")[0] || user.emailId,
+      lastName: user.name?.split(" ").slice(1).join(" ") || "",
+      enabled: true,
+      emailVerified: true,
+      credentials: [
+        {
+          type: "password",
+          value: "eGov@123",
+          temporary: true,
+        },
+      ],
+    };
+
+    const createResp = await fetch(`${kcAdminUrl}/admin/realms/${realm}/users`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(kcUser),
+    });
+
+    if (createResp.status === 409) {
+      this.logger.log(`KC user already exists for ${user.emailId}`);
+      return;
+    }
+
+    if (!createResp.ok) {
+      const text = await createResp.text().catch(() => "");
+      throw new Error(`KC user create failed: ${createResp.status} ${text}`);
+    }
+
+    this.logger.log(`KC user created for employee ${user.emailId}`);
+
+    // Assign DIGIT roles if present
+    const roleCodes = user.roles?.map(r => r.code).filter(Boolean) || [];
+    if (roleCodes.length > 0) {
+      // Get KC user ID from Location header
+      const location = createResp.headers.get("Location") || "";
+      const kcUserId = location.split("/").pop();
+      if (kcUserId) {
+        await this.kcAdmin.assignRealmRoles(realm, kcUserId, roleCodes).catch(err =>
+          this.logger.warn(`KC role assignment failed for ${user.emailId}: ${(err as Error).message}`),
+        );
+      }
     }
   }
 

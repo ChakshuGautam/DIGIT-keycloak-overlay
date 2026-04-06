@@ -143,6 +143,12 @@ export class UserResolverService {
       // For KC-provisioned users, we don't know the password, so we'll set one
       this.metrics.userProvisionTotal.inc({ result: "existing" });
     } else {
+      // Guard against null/empty userName (e.g. HRMS bug sending userName=null)
+      if (!userName || userName === 'null') {
+        this.logger.error(`Cannot provision user: userName is null/empty (email=${claims.email}, sub=${claims.sub})`);
+        throw new Error('Cannot provision user: userName is empty');
+      }
+
       // New user: create
       user = await this.digit.createUser({
         userName,
