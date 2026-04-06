@@ -16,7 +16,8 @@ const DEFAULT_ROUTES: Record<string, string> = {
   "/user": "egov-user:8107",
   "/egov-enc-service": "egov-enc-service:1234",
   "/egov-bndry-mgmnt": "egov-bndry-mgmnt:8080",
-  "/egov-user-event": "egov-user-event:8080",
+  // egov-user-event is not in Kong's declarative config — route direct to container
+  "/egov-user-event": "http://egov-user-event:8080",
   "/common-persist": "egov-persister:8091",
 };
 
