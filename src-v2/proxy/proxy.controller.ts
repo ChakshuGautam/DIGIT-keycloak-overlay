@@ -49,6 +49,10 @@ export class ProxyController {
         const tenantId = body.criteria?.tenantId || body.tenantId || this.defaultTenant;
         url.searchParams.set('tenantId', tenantId);
       }
+      // Boundary service requires boundaryType for relationship searches
+      if (requestUrl.includes('/boundary-service/') && requestUrl.includes('boundary-relationships') && !url.searchParams.has('boundaryType')) {
+        url.searchParams.set('boundaryType', 'City');
+      }
       requestUrl = url.pathname + url.search;
     }
 
