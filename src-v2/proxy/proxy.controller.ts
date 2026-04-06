@@ -118,7 +118,7 @@ export class ProxyController {
     citizenToken: string,
     url?: string,
   ): Promise<void> {
-    const upstreamUrl = `${this.gatewayUrl}${url || req.url}`;
+    let upstreamUrl = `${this.gatewayUrl}${url || req.url}`;
     const contentType = (req.headers["content-type"] as string) || "";
 
     try {
@@ -135,9 +135,11 @@ export class ProxyController {
           body.uuid = [digitUser.uuid];
           body.tenantId = digitUser.tenantId;
         }
-        if (effectiveUrl.includes('/egov-user-event/') && !body.userIds) {
-          // egov-user-event needs userIds for notification lookup
-          body.userIds = [digitUser.uuid];
+        // egov-user-event uses @ModelAttribute — userids must be a query param, not body
+        // For CITIZEN users it auto-populates from userInfo, but for EMPLOYEE it's required
+        if (effectiveUrl.includes('/egov-user-event/') && !effectiveUrl.includes('userids=')) {
+          const separator = effectiveUrl.includes('?') ? '&' : '?';
+          upstreamUrl = upstreamUrl + separator + 'userids=' + digitUser.uuid;
         }
 
         const upstreamResp = await fetch(upstreamUrl, {
