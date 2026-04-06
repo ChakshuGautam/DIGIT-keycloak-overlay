@@ -173,10 +173,23 @@ export class UserResolverService {
         tokenResult = await this.digit.getUserToken(effectiveUserName, v1Password, root, effectiveUserType);
         password = v1Password;
       } catch {
-        // Strategy 3: system default password (pre-existing DIGIT users like ADMIN)
-        const defaultPassword = this.digit.getSystemPassword();
-        tokenResult = await this.digit.getUserToken(effectiveUserName, defaultPassword, root, effectiveUserType);
-        password = defaultPassword;
+        try {
+          // Strategy 3: system default password (pre-existing DIGIT users like ADMIN)
+          const defaultPassword = this.digit.getSystemPassword();
+          tokenResult = await this.digit.getUserToken(effectiveUserName, defaultPassword, root, effectiveUserType);
+          password = defaultPassword;
+        } catch {
+          // Strategy 4: use system token as fallback (newly provisioned users via SSO)
+          // egov-user's _createnovalidate creates users whose passwords don't work
+          // with oauth/token — use the system admin token to proxy requests
+          this.logger.warn(
+            `All token strategies failed for ${effectiveUserName} — using system token fallback`,
+          );
+          const systemToken = this.digit.getSystemToken();
+          if (!systemToken) throw new Error("No system token available");
+          tokenResult = { token: systemToken, expiresIn: 6 * 24 * 60 * 60 * 1000 };
+          password = "SYSTEM_TOKEN_FALLBACK";
+        }
       }
     }
     const token = tokenResult.token;

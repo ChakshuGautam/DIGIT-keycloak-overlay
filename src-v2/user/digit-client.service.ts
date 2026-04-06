@@ -33,6 +33,10 @@ export class DigitClientService implements OnModuleInit {
     return this.systemToken !== null;
   }
 
+  getSystemToken(): string | null {
+    return this.systemToken;
+  }
+
   generateRandomPassword(): string {
     // Format: Kc{10 random base64url chars}@1 = 14 chars total
     const random = randomBytes(9).toString("base64url").slice(0, 10);
