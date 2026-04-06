@@ -46,12 +46,18 @@
       "baseUrl": "/",
       "redirectUris": [
         "http://localhost:*",
-        "https://*.egov.theflywheel.in/*"
+        "https://*.egov.theflywheel.in/*",
+        "https://*.preview.egov.theflywheel.in/*",
+        "https://*.trycloudflare.com/*",
+        "https://keycloak-sandbox.live.digit.org/*"
       ],
       "webOrigins": [
         "http://localhost:3000",
         "http://localhost:5173",
-        "https://*.egov.theflywheel.in"
+        "https://*.egov.theflywheel.in",
+        "https://*.preview.egov.theflywheel.in",
+        "https://*.trycloudflare.com",
+        "https://keycloak-sandbox.live.digit.org"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256"
