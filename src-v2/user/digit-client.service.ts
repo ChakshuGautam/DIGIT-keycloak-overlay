@@ -210,6 +210,11 @@ export class DigitClientService implements OnModuleInit {
       userType,
       grant_type: "password",
       scope: "read",
+      // egov-user uses OTP-based auth for CITIZEN users by default.
+      // isInternal=true bypasses OTP validation for service-to-service calls.
+      // This is the intended mechanism — token-exchange-svc is an internal service
+      // that has already validated the user via Keycloak JWT.
+      isInternal: "true",
     });
 
     const res = await fetch(url, {
