@@ -49,6 +49,18 @@ export class ProxyController {
         const tenantId = body.criteria?.tenantId || body.tenantId || this.defaultTenant;
         url.searchParams.set('tenantId', tenantId);
       }
+      // Fix boundary hierarchy definition: rewrite wrong tenantId in body
+      if (requestUrl.includes('/boundary-service/') && requestUrl.includes('hierarchy-definition')) {
+        const body = (req.body as any) || {};
+        const criteria = body.BoundaryTypeHierarchySearchCriteria;
+        if (criteria && criteria.tenantId) {
+          const stateTenant = this.defaultTenant.split('.')[0]; // "pg" from "pg.citya"
+          if (criteria.tenantId !== stateTenant) {
+            this.logger.debug(`Hierarchy: rewriting tenantId ${criteria.tenantId} → ${stateTenant}`);
+            criteria.tenantId = stateTenant;
+          }
+        }
+      }
       // Boundary service requires boundaryType and includeChildren for relationship searches
       if (requestUrl.includes('/boundary-service/') && requestUrl.includes('boundary-relationships')) {
         if (!url.searchParams.has('boundaryType')) {
@@ -56,6 +68,13 @@ export class ProxyController {
         }
         if (!url.searchParams.has('includeChildren')) {
           url.searchParams.set('includeChildren', 'true');
+        }
+        // Fix state-level tenant: boundaries only exist at city level (e.g. pg.citya, not pg)
+        const tid = url.searchParams.get('tenantId');
+        if (tid && !tid.includes('.')) {
+          const cityTenant = tid + '.citya';
+          this.logger.debug(`Boundary: rewriting state-level tenant ${tid} → ${cityTenant}`);
+          url.searchParams.set('tenantId', cityTenant);
         }
       }
       requestUrl = url.pathname + url.search;
