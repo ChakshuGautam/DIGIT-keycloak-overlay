@@ -22,6 +22,16 @@ export const config = {
   keycloakAdminClientId: process.env.KEYCLOAK_ADMIN_CLIENT_ID || "admin-cli",
   keycloakAdminUsername: process.env.KEYCLOAK_ADMIN_USERNAME || "admin",
   keycloakAdminPassword: process.env.KEYCLOAK_ADMIN_PASSWORD || "admin",
+  // HMAC secret used to derive a strong KC-internal password for users provisioned
+  // via the DIGIT-fallback path. The derived password lives only in KC (KC's stored
+  // hash + the overlay's HMAC) — users never see it, can't log in with it. DIGIT
+  // remains the source of truth for credentials (OTP for citizens, real password
+  // for employees). Falls back to the admin password so existing deployments don't
+  // need new wiring, but operators should set a dedicated secret in production.
+  keycloakProvisioningSecret:
+    process.env.KEYCLOAK_PROVISIONING_SECRET ||
+    process.env.KEYCLOAK_ADMIN_PASSWORD ||
+    "overlay-provisioning-default-secret",
   keycloakUserRealm: process.env.KEYCLOAK_USER_REALM || "digit-sandbox",
   tenantSyncEnabled: process.env.TENANT_SYNC_ENABLED !== "false",
 
