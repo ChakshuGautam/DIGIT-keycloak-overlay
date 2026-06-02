@@ -79,7 +79,11 @@ export async function validateJwt(
       groups: (verified.groups as string[]) || undefined,
       realm,
     };
-  } catch {
+  } catch (err) {
+    const e = err as Error & { code?: string };
+    console.error(
+      `[JWT] validateJwt failed: name=${e.name || "?"} code=${e.code || "?"} msg=${e.message || String(e)}`,
+    );
     return null;
   }
 }
