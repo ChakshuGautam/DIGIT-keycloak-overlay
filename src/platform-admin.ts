@@ -353,6 +353,279 @@ export function registerPlatformAdminRoutes(app: Express) {
     }
   });
 
+  // POST /platform-admin/scoped-admins/_invite
+  //   God-only. Same as _create but does NOT generate a password.
+  //   Instead it:
+  //     1. Creates the KC user with the invitee's email (username defaults
+  //        to email, can be overridden).
+  //     2. Assigns the bootstrap:<tenantId> role.
+  //     3. Triggers KC's executeActionsEmail to send the invitee a link
+  //        with UPDATE_PASSWORD + VERIFY_EMAIL actions. After they click
+  //        through, KC redirects to redirect_uri (the SPA's /admin/login
+  //        with the email pre-filled).
+  //
+  //   Body: { tenantId, email, firstName?, lastName?, redirectUri? }
+  //   Returns: { username, email, tenantId, role, inviteSent, expiresAt }
+  app.post("/platform-admin/scoped-admins/_invite", async (req, res) => {
+    const scope = await resolveAuthScope(req);
+    if ("status" in scope) return res.status(scope.status).json(scope.body);
+    if (scope.kind !== "god") {
+      return res.status(403).json({
+        error: "forbidden",
+        message:
+          "Inviting scoped admins requires god-mode platform admin.",
+      });
+    }
+
+    const tenantId = String(req.body?.tenantId || "").trim();
+    const email = String(req.body?.email || "").trim();
+    if (!tenantId || !email) {
+      return res.status(400).json({
+        error: "bad_request",
+        message: "tenantId and email are required.",
+      });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({
+        error: "bad_request",
+        message: `Invalid email: ${email}`,
+      });
+    }
+
+    // Username defaults to email — KC allows it, and it matches the
+    // single-credential model invitees expect (they log in with their
+    // email, not a generated handle).
+    const username =
+      String(req.body?.username || "").trim() || email.toLowerCase();
+    // KC realm enables a person-name validator with regex along the lines
+    // of `^[\p{L}\p{M}*+ '-]+$` — letters, marks, spaces, hyphens,
+    // apostrophes only. Dots, parens, digits etc. trigger 400 from KC.
+    // So defaults must stay within that alphabet; tenant ids carry dots
+    // and digits and CANNOT go into firstName/lastName directly.
+    const firstName = String(req.body?.firstName || "").trim() || "Tenant";
+    const lastName = String(req.body?.lastName || "").trim() || "Admin";
+    const roleName = `${SCOPED_ROLE_PREFIX}${tenantId}`;
+
+    // Where the invitee lands after completing UPDATE_PASSWORD. Caller
+    // may override; default matches the digit-ui-v2 SPA at the citizen
+    // basename — its admin pages mount under /citizen/admin/* because
+    // that SPA's <BrowserRouter basename="/citizen">. Override via
+    // OVERLAY_ADMIN_REDIRECT_BASE env if your SPA is mounted elsewhere.
+    const adminBase =
+      process.env.OVERLAY_ADMIN_REDIRECT_BASE ||
+      `${(req.headers["x-forwarded-proto"] || "https")}://${req.headers["x-forwarded-host"] || req.headers["host"]}/citizen/admin`;
+    // No query string in the redirect — KC's URI allowlist matching is
+    // strict about query patterns (?* wildcards don't reliably work
+    // across KC versions). The invited=true / email hints are passed via
+    // the URL hash instead, which KC doesn't validate and the SPA can
+    // read on mount.
+    const inviteRedirectUri =
+      String(req.body?.redirectUri || "").trim() || `${adminBase}/login`;
+
+    // KC's executeActionsEmail link TTL (seconds). 12h is enough for an
+    // invitee to find the email in another tab without re-sending.
+    const inviteLifespanSec = 12 * 60 * 60;
+
+    try {
+      // 1. Create the user — no `credentials`, no password. KC marks the
+      //    account `enabled` but unauthenticated until the actions are
+      //    completed. Idempotent (409 = already exists, we'll just
+      //    re-trigger the email).
+      const createResp = await kcAdminFetch(
+        `/admin/realms/${PLATFORM_ADMIN_REALM}/users`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username,
+            email,
+            firstName,
+            lastName,
+            enabled: true,
+            emailVerified: false,
+            // Mark UPDATE_PASSWORD as a required action — even if the
+            // user somehow bypasses the email link, KC will force a
+            // password set on first login.
+            requiredActions: ["UPDATE_PASSWORD"],
+          }),
+        },
+      );
+      const created = createResp.status === 201;
+      if (!createResp.ok && createResp.status !== 409) {
+        throw new Error(
+          `user create failed: ${createResp.status} ${await createResp.text()}`,
+        );
+      }
+
+      // 2. Resolve user id
+      const lookup = await kcAdminFetch(
+        `/admin/realms/${PLATFORM_ADMIN_REALM}/users?username=${encodeURIComponent(username)}&exact=true`,
+      );
+      const users = (await lookup.json()) as Array<{ id: string }>;
+      if (!users[0]) throw new Error(`user lookup returned no rows for ${username}`);
+      const userId = users[0].id;
+
+      // 3. Find-or-create the bootstrap:<tenantId> role and assign
+      const role = await findOrCreateScopedRole(
+        PLATFORM_ADMIN_REALM,
+        roleName,
+        `Allows holder to bootstrap tenant ${tenantId} via the platform-admin gateway.`,
+      );
+      const assign = await kcAdminFetch(
+        `/admin/realms/${PLATFORM_ADMIN_REALM}/users/${userId}/role-mappings/realm`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify([{ id: role.id, name: role.name }]),
+        },
+      );
+      if (!assign.ok && assign.status !== 409) {
+        throw new Error(
+          `role assign failed: ${assign.status} ${await assign.text()}`,
+        );
+      }
+
+      // 4. Trigger the invite email. KC composes the email using the
+      //    realm's SMTP config and the email template
+      //    (login/email/executeActions.ftl). The link carries an action
+      //    token that's valid for `lifespan` seconds.
+      //
+      //    `client_id` + `redirect_uri` together tell KC where to send
+      //    the user after they complete the required actions. The
+      //    redirect_uri MUST be in the client's allowlist or KC will
+      //    silently drop it and use the client's baseUrl instead.
+      const actionParams = new URLSearchParams({
+        lifespan: String(inviteLifespanSec),
+        client_id: "admin-cli",
+        redirect_uri: inviteRedirectUri,
+      });
+      const sendEmail = await kcAdminFetch(
+        `/admin/realms/${PLATFORM_ADMIN_REALM}/users/${userId}/execute-actions-email?${actionParams.toString()}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(["UPDATE_PASSWORD"]),
+        },
+      );
+      if (!sendEmail.ok) {
+        // The user + role exist regardless. Returning 5xx would leave the
+        // caller unsure whether to retry; instead return 200 with
+        // inviteSent: false so they can resend explicitly.
+        const errBody = await sendEmail.text();
+        console.error(
+          `[PLATFORM-ADMIN] scoped-admin _invite — executeActionsEmail failed for ${email}: ${sendEmail.status} ${errBody}`,
+        );
+        return res.status(200).json({
+          username,
+          email,
+          tenantId,
+          role: roleName,
+          realm: PLATFORM_ADMIN_REALM,
+          created,
+          inviteSent: false,
+          inviteError: `KC executeActionsEmail returned ${sendEmail.status}: ${errBody.slice(0, 200)}`,
+          hint: "Most common cause: realm SMTP not configured. Set master realm smtpServer.* (host, port, user, password, from).",
+        });
+      }
+
+      console.log(
+        `[PLATFORM-ADMIN] scoped-admin _invite username=${username} email=${email} tenantId=${tenantId} role=${roleName} created=${created} inviteSent=true`,
+      );
+      res.status(created ? 201 : 200).json({
+        username,
+        email,
+        tenantId,
+        role: roleName,
+        realm: PLATFORM_ADMIN_REALM,
+        created,
+        inviteSent: true,
+        expiresAt: new Date(Date.now() + inviteLifespanSec * 1000).toISOString(),
+        redirectUri: inviteRedirectUri,
+      });
+    } catch (err) {
+      console.error(
+        `[PLATFORM-ADMIN] scoped-admin _invite failed for tenantId=${tenantId} email=${email}:`,
+        (err as Error).message,
+      );
+      res.status(500).json({
+        error: "internal_error",
+        message: (err as Error).message,
+      });
+    }
+  });
+
+  // GET /platform-admin/scoped-admins
+  //   God-only. List all scoped admin accounts (users with any
+  //   bootstrap:<tenantId> role). For the SPA dashboard.
+  app.get("/platform-admin/scoped-admins", async (req, res) => {
+    const scope = await resolveAuthScope(req);
+    if ("status" in scope) return res.status(scope.status).json(scope.body);
+    if (scope.kind !== "god") {
+      return res.status(403).json({
+        error: "forbidden",
+        message: "Listing scoped admins requires god-mode platform admin.",
+      });
+    }
+
+    try {
+      // KC has no native "users by role" search. We fetch all roles whose
+      // name starts with `bootstrap:`, then for each role fetch the
+      // members, then merge.
+      const rolesResp = await kcAdminFetch(
+        `/admin/realms/${PLATFORM_ADMIN_REALM}/roles?search=${encodeURIComponent(SCOPED_ROLE_PREFIX)}&first=0&max=200`,
+      );
+      const allRoles = (await rolesResp.json()) as Array<{ name: string }>;
+      const scopedRoles = allRoles.filter((r) =>
+        r.name.startsWith(SCOPED_ROLE_PREFIX),
+      );
+
+      const out: Array<{
+        username: string;
+        email: string;
+        tenantId: string;
+        role: string;
+        emailVerified: boolean;
+        requiredActions: string[];
+        createdTimestamp?: number;
+      }> = [];
+
+      for (const role of scopedRoles) {
+        const tenantId = role.name.slice(SCOPED_ROLE_PREFIX.length);
+        const usersResp = await kcAdminFetch(
+          `/admin/realms/${PLATFORM_ADMIN_REALM}/roles/${encodeURIComponent(role.name)}/users`,
+        );
+        if (!usersResp.ok) continue;
+        const users = (await usersResp.json()) as Array<{
+          username: string;
+          email?: string;
+          emailVerified?: boolean;
+          requiredActions?: string[];
+          createdTimestamp?: number;
+        }>;
+        for (const u of users) {
+          out.push({
+            username: u.username,
+            email: u.email || "",
+            tenantId,
+            role: role.name,
+            emailVerified: !!u.emailVerified,
+            requiredActions: u.requiredActions || [],
+            createdTimestamp: u.createdTimestamp,
+          });
+        }
+      }
+
+      // Newest first; same email may appear once per tenant they admin.
+      out.sort((a, b) => (b.createdTimestamp || 0) - (a.createdTimestamp || 0));
+      res.json({ count: out.length, scopedAdmins: out });
+    } catch (err) {
+      res.status(500).json({
+        error: "internal_error",
+        message: (err as Error).message,
+      });
+    }
+  });
+
   // ANY /platform-admin/* — proxy to MCP after RBAC check
   app.all("/platform-admin/*", async (req, res) => {
     // Don't double-handle the _create route above. Express matches in
