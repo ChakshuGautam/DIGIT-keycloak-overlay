@@ -161,6 +161,35 @@ export async function createApp() {
       console.log(`[BOUNDARY-FIX] Body tenantId: ${criteria.tenantId} → ${stateTenant}`);
       criteria.tenantId = stateTenant;
     }
+    next();
+  });
+
+  // PGR create payload sanitizer.
+  //
+  // egov-persister maps the incoming kafka message via JsonPath. The rule
+  // for the PGR address row extracts `$.service.address.geoLocation.latitude`
+  // / `.longitude` directly — a JsonPath defaults-or-null helper isn't
+  // configured, so a `geoLocation: null` (which the citizen SPA sends when
+  // the user doesn't / can't pick a map pin) causes the persister to throw
+  // PathNotFoundException, roll back the INSERT, and seek back to the same
+  // offset forever. Net effect: no PGR complaint can persist until the
+  // poison message is skipped, AND every future complaint without geo data
+  // hits the same wall.
+  //
+  // Fix at the proxy: when forwarding a PGR _create with a null
+  // geoLocation, substitute a sentinel `{latitude: 0, longitude: 0}` so
+  // the persister's JsonPath query resolves. The downstream is unaffected
+  // (egov-pgr-services itself doesn't validate this field) and the row
+  // lands cleanly. SPA stays unchanged.
+  app.use((req, _res, next) => {
+    if (!req.path.endsWith("/pgr-services/v2/request/_create")) return next();
+    const svc = req.body?.service;
+    if (svc && svc.address && svc.address.geoLocation === null) {
+      svc.address.geoLocation = { latitude: 0, longitude: 0 };
+      console.log(
+        `[PGR-FIX] Substituted null geoLocation with {0,0} on _create to avoid persister PathNotFoundException`,
+      );
+    }
 
     next();
   });
