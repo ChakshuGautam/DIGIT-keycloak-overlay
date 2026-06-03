@@ -1,6 +1,7 @@
 import { config } from "./config.js";
 import type { DigitUser, DigitLoginResponse } from "./types.js";
 import { createHash } from "node:crypto";
+import { synthesizeUniqueMobile } from "./synthetic-mobile.js";
 
 // Generate a password that meets DIGIT's policy:
 // 8-15 chars, at least one uppercase, lowercase, digit, special (@#$%)
@@ -108,6 +109,58 @@ export async function searchUser(
   return data.user?.[0] || null;
 }
 
+/**
+ * Search for an existing DIGIT user by userName, optionally filtering by type.
+ * Used for employee resolution — when KC claims indicate an employee, we need
+ * to find their existing DIGIT account (which has type=EMPLOYEE, userName=ADMIN etc).
+ */
+/**
+ * Search for an existing DIGIT user by mobileNumber. Used by the synthetic-
+ * mobile collision check in createUser. Returns null on any non-2xx, on
+ * empty results, or when the system token isn't initialized.
+ */
+export async function searchUserByMobile(
+  mobileNumber: string,
+  tenantId: string,
+): Promise<DigitUser | null> {
+  const resp = await fetch(digitUrl("/user/_search"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      RequestInfo: { apiId: "Rainmaker", authToken: systemToken },
+      tenantId: rootTenant(tenantId),
+      mobileNumber,
+      pageSize: 1,
+    }),
+  });
+  if (!resp.ok) return null;
+  const data = (await resp.json()) as { user?: DigitUser[] };
+  return data.user?.[0] || null;
+}
+
+export async function searchUserByUserName(
+  userName: string,
+  tenantId: string,
+  userType?: string,
+): Promise<DigitUser | null> {
+  const body: Record<string, unknown> = {
+    RequestInfo: { apiId: "Rainmaker", authToken: systemToken },
+    userName,
+    tenantId: rootTenant(tenantId),
+    pageSize: 1,
+  };
+  if (userType) body.userType = userType;
+
+  const resp = await fetch(digitUrl("/user/_search"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) return null;
+  const data = (await resp.json()) as { user: DigitUser[] };
+  return data.user?.[0] || null;
+}
+
 export async function createUser(params: {
   name: string;
   email: string;
@@ -125,14 +178,31 @@ export async function createUser(params: {
     roles.push(citizenRole);
   }
 
-  const mobileHash =
-    parseInt(
-      createHash("sha256")
-        .update(params.keycloakSub)
-        .digest("hex")
-        .slice(0, 5),
-      16,
-    ) % 100000;
+  // Mobile resolution: prefer the JWT's phone_number when present.
+  // Otherwise synthesize a placeholder that satisfies the tenant's
+  // mobile-validation regex (pulled from MDMS common-masters.UserValidation)
+  // AND is unique against existing egov-user rows. Falls back to the
+  // env-var prefix shape when MDMS is unreachable.
+  let mobileNumber = params.phoneNumber;
+  if (!mobileNumber) {
+    if (!systemToken) {
+      throw new Error("system token not initialized — cannot synthesize mobile");
+    }
+    const result = await synthesizeUniqueMobile({
+      tenantId: root,
+      sub: params.keycloakSub,
+      systemToken,
+      isMobileTaken: async (m, tid) => {
+        const u = await searchUserByMobile(m, tid);
+        return u !== null;
+      },
+    });
+    mobileNumber = result.mobile;
+    console.log(
+      `[CREATE-USER] synthesized mobile=${mobileNumber} (source=${result.source}, attempts=${result.attempts}) for sub=${params.keycloakSub.slice(0, 8)}`,
+    );
+  }
+
   const resp = await fetch(digitUrl("/user/users/_createnovalidate"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -142,9 +212,7 @@ export async function createUser(params: {
         userName: params.email,
         name: params.name,
         emailId: params.email,
-        mobileNumber:
-          params.phoneNumber ||
-          `90000${String(mobileHash).padStart(5, "0")}`,
+        mobileNumber,
         password: generatePassword(params.keycloakSub),
         tenantId: root,
         type: "CITIZEN",

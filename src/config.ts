@@ -33,6 +33,17 @@ export const config = {
     process.env.KEYCLOAK_ADMIN_PASSWORD ||
     "overlay-provisioning-default-secret",
   keycloakUserRealm: process.env.KEYCLOAK_USER_REALM || "digit-sandbox",
+
+  // Placeholder mobile prefix for citizens provisioned via SSO who have no
+  // phone_number claim in their KC JWT. The overlay synthesizes a 10-digit
+  // mobile as `<prefix><5-digit-hash-of-sub>`. Default `90000` produces
+  // `90000XXXXX` which fits standard 10-digit (India) regexes. Deployments
+  // with different tenant validation regexes must override — e.g. Bomet's
+  // Kenya regex `^0?[17][0-9]{8}$` needs prefix `07000` to produce
+  // `07000XXXXX` (valid 10-digit Kenya mobile shape). The hash is derived
+  // from the user's KC sub, so it stays stable across re-provisioning.
+  overlaySyntheticMobilePrefix:
+    process.env.OVERLAY_SYNTHETIC_MOBILE_PREFIX || "90000",
   tenantSyncEnabled: process.env.TENANT_SYNC_ENABLED !== "false",
 
   // DIGIT MDMS (for tenant sync)
