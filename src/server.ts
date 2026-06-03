@@ -223,10 +223,22 @@ export async function createApp() {
       const { user, token } = await resolveUser(claims, tenantId);
       console.log(`[USERINFO] → ${user.userName} (${user.type}, uuid=${user.uuid})`);
 
+      // Return BOTH the OIDC-standard claim names (sub, email, phone_number,
+      // preferred_username) AND the DIGIT-native field names (uuid, emailId,
+      // mobileNumber, userName). The citizen SPA reads phone_number / email
+      // following the OIDC contract; older DIGIT call sites read the
+      // DIGIT-native shape. Returning both keeps the overlay backward-
+      // compatible without forcing every consumer to migrate at once.
       res.json({
+        // OIDC-standard claim names
+        sub: user.uuid,
+        preferred_username: user.userName,
+        name: user.name,
+        email: user.emailId,
+        phone_number: user.mobileNumber,
+        // DIGIT-native field names (existing consumers)
         uuid: user.uuid,
         userName: user.userName,
-        name: user.name,
         emailId: user.emailId,
         mobileNumber: user.mobileNumber,
         tenantId: user.tenantId,

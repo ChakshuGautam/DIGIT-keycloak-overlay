@@ -192,6 +192,57 @@ export async function getUserGroupsInRealm(
 
 // ─── User-role ───────────────────────────────────────────────────────────────
 
+/**
+ * Patch a single user attribute on a KC user (e.g. phoneNumber).
+ *
+ * KC's user PUT is a full-rep replace, so we GET → mutate → PUT to
+ * avoid clobbering other attributes / role mappings / credentials.
+ * This is intentionally for `attributes.<key>` writes only; for top-
+ * level fields like email / firstName, use a different helper.
+ *
+ * KC's `phone` client scope (built-in since KC 24) reads from
+ * `attributes.phoneNumber` and surfaces it as the `phone_number` JWT
+ * claim — so writing this attribute is what makes the next-minted
+ * JWT carry the phone, which is what SPAs read into `auth.user.mobileNumber`.
+ *
+ * Idempotent: if the existing attribute value already matches, the
+ * PUT is still issued (KC has no compare-and-set), but it's a no-op
+ * for downstream behavior.
+ */
+export async function setUserAttributeInRealm(
+  realm: string,
+  userId: string,
+  key: string,
+  value: string,
+): Promise<void> {
+  const get = await fetch(adminUrl(`/admin/realms/${realm}/users/${userId}`), {
+    headers: authHeaders(),
+  });
+  if (!get.ok) {
+    throw new Error(
+      `setUserAttributeInRealm: GET user ${userId} in realm ${realm} failed: ${get.status}`,
+    );
+  }
+  const user = (await get.json()) as {
+    attributes?: Record<string, string[]>;
+    [k: string]: unknown;
+  };
+  user.attributes = user.attributes || {};
+  // KC stores attribute values as string arrays even for single values.
+  user.attributes[key] = [value];
+
+  const put = await fetch(adminUrl(`/admin/realms/${realm}/users/${userId}`), {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify(user),
+  });
+  if (!put.ok) {
+    throw new Error(
+      `setUserAttributeInRealm: PUT user ${userId} attribute ${key} failed: ${put.status} ${await put.text()}`,
+    );
+  }
+}
+
 export async function assignRealmRoles(
   realm: string,
   userId: string,
