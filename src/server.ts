@@ -14,6 +14,7 @@ import { searchKeycloakUser, createKeycloakUser, getAdminToken, deriveKcPassword
 import { initKcAdmin, stopKcAdminRefresh, syncTenantRealms } from "./kc-admin.js";
 import { installLogDrain, queryLogs, clearLogs, logCount } from "./log-drain.js";
 import { searchUserByUserName, getSystemToken } from "./digit-client.js";
+import { registerPlatformAdminRoutes } from "./platform-admin.js";
 
 // Decode JWT payload without verification (for extracting sub from KC access tokens)
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
@@ -454,6 +455,11 @@ export async function createApp() {
     const retryErr = await retryResp.text();
     return res.status(retryResp.status).type("json").send(retryErr);
   });
+
+  // Platform admin routes (gated on master-realm JWT, proxy to MCP).
+  // Registered BEFORE the catch-all so /platform-admin/* matches here, not
+  // there.
+  registerPlatformAdminRoutes(app);
 
   // Main proxy handler
   app.all("*", async (req, res) => {

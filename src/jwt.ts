@@ -66,10 +66,17 @@ export async function validateJwt(
     const jwks = getJwks(realm);
     const { payload: verified } = await jwtVerify(token, jwks, { issuer: iss });
 
-    if (!verified.sub || !verified.email) return null;
+    if (!verified.sub) return null;
+    // KC's master-realm admin (and some other built-in accounts) often lack
+    // an `email` claim. We synthesize one so downstream code that expects a
+    // string keeps working — it's never used as a real address, just as a
+    // stable identifier alongside `sub` for logging and cache keys.
+    const email =
+      (verified.email as string) ||
+      `${verified.preferred_username || verified.sub}@${realm}.kc.local`;
     return {
       sub: verified.sub,
-      email: verified.email as string,
+      email,
       name: (verified.name as string) || undefined,
       preferred_username:
         (verified.preferred_username as string) || undefined,
@@ -81,8 +88,12 @@ export async function validateJwt(
     };
   } catch (err) {
     const e = err as Error & { code?: string };
+    const tokenLen = (authHeader || "").slice(7).length;
+    const dotCount = (authHeader || "").slice(7).split(".").length - 1;
     console.error(
-      `[JWT] validateJwt failed: name=${e.name || "?"} code=${e.code || "?"} msg=${e.message || String(e)}`,
+      `[JWT] validateJwt failed: name=${e.name || "?"} code=${e.code || "?"} ` +
+        `tokenLen=${tokenLen} dotCount=${dotCount} ` +
+        `msg=${e.message || String(e)}`,
     );
     return null;
   }
