@@ -658,6 +658,65 @@ export function registerPlatformAdminRoutes(app: Express) {
       }
     }
 
+    // Auto-_generatekey for tenant_bootstrap on a NEW root tenant.
+    //
+    // When MCP's tenant_bootstrap reaches its admin-user-create step,
+    // egov-user calls egov-enc-service to encrypt the new admin's PII.
+    // For a brand-new state root (one not under any existing root's
+    // tenant.tenants list), enc-service has no key and 500s
+    // "Tenant Id not found", which surfaces in the bootstrap response as
+    // adminUser.provisioned=false. The wizard then looks broken even
+    // though most of the bootstrap (schemas, MDMS data, localizations)
+    // succeeded.
+    //
+    // Fix transparently: before forwarding the bootstrap, POST to
+    // enc-service /crypto/v1/_generatekey for the target tenant. The
+    // endpoint is idempotent (returns the existing keyId for known
+    // tenants), so this is safe for sub-tenants too. Failure is
+    // logged but NOT fatal — the bootstrap may still succeed if the
+    // tenant has a key via some other path (e.g. it was pre-seeded).
+    if (
+      req.method === "POST" &&
+      upstreamPath === "/v1/tenant/bootstrap" &&
+      req.body?.target_tenant
+    ) {
+      const encUrl =
+        process.env.DIGIT_ENC_SERVICE_URL ||
+        `${config.digitGatewayHost}/egov-enc-service`;
+      try {
+        const gen = await fetch(`${encUrl}/crypto/v1/_generatekey`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tenantId: req.body.target_tenant }),
+        });
+        if (gen.ok) {
+          const g = await gen.json();
+          console.log(
+            `[PLATFORM-ADMIN] auto _generatekey for ${req.body.target_tenant}: created=${g.created} keyId=${g.keyId}`,
+          );
+        } else if (gen.status === 404) {
+          // enc-service doesn't have _generatekey deployed yet — log
+          // once and proceed. Operators with an older enc-service
+          // image will see admin-user provisioning fail for new roots
+          // and know to upgrade.
+          console.warn(
+            `[PLATFORM-ADMIN] _generatekey endpoint missing on enc-service (404). ` +
+              `Bootstrap of a brand-new root will fail at admin-user create. ` +
+              `Upgrade egov-enc-service to a build that includes the endpoint.`,
+          );
+        } else {
+          console.warn(
+            `[PLATFORM-ADMIN] _generatekey for ${req.body.target_tenant} returned ${gen.status} — proceeding anyway`,
+          );
+        }
+      } catch (err) {
+        console.warn(
+          `[PLATFORM-ADMIN] _generatekey for ${req.body.target_tenant} threw — proceeding anyway:`,
+          (err as Error).message,
+        );
+      }
+    }
+
     const upstreamUrl = `${MCP_BASE_URL}${upstreamPath}`;
     const upstreamHeaders: Record<string, string> = {
       "Content-Type": req.headers["content-type"] || "application/json",
